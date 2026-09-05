@@ -117,57 +117,177 @@ def year_is_valid(year, year_from, year_to):
     return True
 
 
+def is_probably_author_text(text: str):
+    if not text:
+        return False
+
+    text = clean_text(text)
+
+    parts = [
+        part.strip()
+        for part in text.split(",")
+        if part.strip()
+    ]
+
+    if not parts:
+        return False
+
+    author_like = 0
+
+    for part in parts:
+        # Например:
+        # ОВ Гречановська
+        # ОМ Мегем
+        # СА Гаркуша
+        # НЯ Лепіш
+        if re.fullmatch(
+            r"[А-ЯІЇЄҐA-ZЁЙ]{1,5}\s+[А-ЯІЇЄҐA-ZЁЙ][а-яіїєґa-zё]+",
+            part
+        ):
+            author_like += 1
+
+    return author_like == len(parts)
+
+
 def extract_journal(summary: str, year):
-    if not summary or not year:
+    """
+    Пытаемся получить название журнала из publication_info.summary.
+
+    Google Scholar иногда возвращает:
+    'Название журнала …. 2023'
+
+    В таком случае НЕ показываем обрезанное название с '…'.
+
+    Также отбрасываем случаи, когда Scholar фактически
+    подставил туда список авторов.
+    """
+
+    if not summary:
         return ""
 
     text = clean_text(summary)
 
-    year_match = re.search(
-        rf"\b{year}\b",
-        text
-    )
-
-    if not year_match:
+    if not text:
         return ""
 
-    before_year = text[:year_match.start()].strip()
+    # Убираем всё после года, если оно есть
+    if year:
+        year_match = re.search(
+            rf"\b{year}\b",
+            text
+        )
 
-    if " - " not in before_year:
-        return ""
+        if year_match:
+            before_year = text[:year_match.start()].strip()
+        else:
+            before_year = text
+    else:
+        before_year = text
 
-    journal = before_year.split(
-        " - ",
-        1
-    )[1].strip()
-
-    journal = journal.rstrip(
+    before_year = before_year.rstrip(
         " ,.;:-"
     )
 
-    # Не показываем слишком длинные значения
-    if len(journal) > 120:
+    # Если Google Scholar сам обрезал название
+    if "…" in before_year or "..." in before_year:
         return ""
 
-    # Не показываем, если Scholar фактически вернул список авторов
-    parts = [
-        part.strip()
-        for part in journal.split(",")
-        if part.strip()
-    ]
+    if not before_year:
+        return ""
 
-    if len(parts) >= 2:
-        first_part = parts[0]
+    # Если это просто авторы — не считаем их журналом
+    if is_probably_author_text(before_year):
+        return ""
 
-        # Авторские инициалы обычно выглядят примерно так:
-        # "СА Гаркуша", "НЯ Лепіш", "АІ Мельниченко"
-        if re.fullmatch(
-            r"[А-ЯІЇЄҐA-ZЁЙ]{2,4}\s+[А-ЯІЇЄҐA-ZЁЙ][а-яіїєґa-zё]+",
-            first_part
-        ):
-            return ""
+    # Иногда Scholar возвращает авторов + журнал.
+    # Берём часть после последнего ' - '.
+    if " - " in before_year:
+        candidate = before_year.split(
+            " - "
+        )[-1].strip()
+    else:
+        candidate = before_year
 
-    return journal
+    candidate = candidate.strip(
+        " ,.;:-"
+    )
+
+    if not candidate:
+        return ""
+
+    if "…" in candidate or "..." in candidate:
+        return ""
+
+    if is_probably_author_text(candidate):
+        return ""
+
+    # Слишком длинная строка почти наверняка не журнал
+    if len(candidate) > 180:
+        return ""
+
+    return candidate
+
+
+def extract_bibliographic_details(text: str, year):
+    """
+    Пытаемся дополнительно достать:
+    - том
+    - номер
+    - страницы
+
+    из уже имеющейся библиографической строки.
+
+    Ничего не выдумываем.
+    """
+
+    if not text:
+        return {
+            "volume": "",
+            "issue": "",
+            "pages": ""
+        }
+
+    text = clean_text(text)
+
+    volume = ""
+    issue = ""
+    pages = ""
+
+    volume_match = re.search(
+        r"(?:Т\.|Том|Vol\.?)\s*"
+        r"([0-9]+(?:\s*\([0-9]+\))?)",
+        text,
+        re.IGNORECASE
+    )
+
+    if volume_match:
+        volume = volume_match.group(1)
+
+    issue_match = re.search(
+        r"(?:№|No\.|Issue)\s*"
+        r"([0-9]+)",
+        text,
+        re.IGNORECASE
+    )
+
+    if issue_match:
+        issue = issue_match.group(1)
+
+    pages_match = re.search(
+        r"(?:С\.|Стор\.|Pages?|Pp?\.)\s*"
+        r"([0-9]+(?:\s*[-–—]\s*[0-9]+)?)",
+        text,
+        re.IGNORECASE
+    )
+
+    if pages_match:
+        pages = pages_match.group(1)
+
+    return {
+        "volume": volume,
+        "issue": issue,
+        "pages": pages
+    }
 
 
 def format_bibliography(
@@ -186,6 +306,11 @@ def format_bibliography(
     ]
 
     journal = extract_journal(
+        summary,
+        year
+    )
+
+    details = extract_bibliographic_details(
         summary,
         year
     )
@@ -210,6 +335,21 @@ def format_bibliography(
     if year:
         parts.append(
             str(year) + "."
+        )
+
+    if details["volume"]:
+        parts.append(
+            "Т. " + details["volume"] + "."
+        )
+
+    if details["issue"]:
+        parts.append(
+            "№ " + details["issue"] + "."
+        )
+
+    if details["pages"]:
+        parts.append(
+            "С. " + details["pages"] + "."
         )
 
     citation = " ".join(parts)
