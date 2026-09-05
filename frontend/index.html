@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Research Finder</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #111111;
+            color: #eeeeee;
+        }
+
+        .container {
+            width: 90%;
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 60px 0;
+        }
+
+        h1 {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #999999;
+            margin-bottom: 40px;
+        }
+
+        .search-box {
+            background: #1c1c1c;
+            padding: 25px;
+            border-radius: 16px;
+            border: 1px solid #333333;
+        }
+
+        textarea {
+            width: 100%;
+            min-height: 100px;
+            resize: vertical;
+            background: #111111;
+            border: 1px solid #444444;
+            border-radius: 10px;
+            color: white;
+            padding: 15px;
+            font-size: 16px;
+            outline: none;
+        }
+
+        .filters {
+            display: flex;
+            gap: 15px;
+            margin-top: 15px;
+            flex-wrap: wrap;
+        }
+
+        input {
+            background: #111111;
+            border: 1px solid #444444;
+            color: white;
+            padding: 12px;
+            border-radius: 8px;
+            width: 150px;
+        }
+
+        button {
+            margin-top: 20px;
+            padding: 14px 25px;
+            border: none;
+            border-radius: 9px;
+            background: white;
+            color: black;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #cccccc;
+        }
+
+        #results {
+            margin-top: 35px;
+        }
+
+        .stats {
+            background: #1c1c1c;
+            border: 1px solid #333333;
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+        }
+
+        .result {
+            background: #1c1c1c;
+            border: 1px solid #333333;
+            padding: 22px;
+            border-radius: 12px;
+            margin-bottom: 15px;
+        }
+
+        .source {
+            display: inline-block;
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #999999;
+            margin-bottom: 10px;
+        }
+
+        .result h3 {
+            margin: 5px 0 12px;
+            font-size: 20px;
+        }
+
+        .result p {
+            color: #bbbbbb;
+            line-height: 1.5;
+        }
+
+        .result a {
+            display: inline-block;
+            margin-top: 10px;
+            color: white;
+            font-weight: bold;
+            text-decoration: none;
+        }
+
+        .result a:hover {
+            text-decoration: underline;
+        }
+
+        .empty {
+            background: #1c1c1c;
+            border: 1px solid #333333;
+            padding: 30px;
+            border-radius: 12px;
+            text-align: center;
+            color: #aaaaaa;
+        }
+
+        .free {
+            color: #aaaaaa;
+            font-size: 13px;
+            margin-top: 10px;
+        }
+
+        .match {
+            display: inline-block;
+            margin-top: 5px;
+            padding: 6px 10px;
+            border: 1px solid #444444;
+            border-radius: 6px;
+            color: #eeeeee;
+            font-size: 13px;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="container">
+
+    <h1>Research Finder</h1>
+
+    <div class="subtitle">
+        Пошук безкоштовних академічних джерел
+    </div>
+
+    <div class="search-box">
+
+        <textarea
+            id="query"
+            placeholder="Введіть тему курсової або магістерської роботи..."
+        ></textarea>
+
+        <div class="filters">
+
+            <input
+                id="yearFrom"
+                type="number"
+                value="2015"
+                placeholder="Рік від"
+            >
+
+            <input
+                id="yearTo"
+                type="number"
+                value="2026"
+                placeholder="Рік до"
+            >
+
+        </div>
+
+        <button onclick="searchSources()">
+            Знайти джерела
+        </button>
+
+        <div class="free">
+            Google Scholar · OpenAlex
+        </div>
+
+    </div>
+
+    <div id="results"></div>
+
+</div>
+
+
+<script>
+
+async function searchSources() {
+
+    const query =
+        document.getElementById("query").value.trim();
+
+    const yearFrom =
+        document.getElementById("yearFrom").value;
+
+    const yearTo =
+        document.getElementById("yearTo").value;
+
+    const resultsContainer =
+        document.getElementById("results");
+
+
+    if (!query) {
+
+        alert("Введіть тему роботи");
+
+        return;
+    }
+
+
+    resultsContainer.innerHTML = `
+        <div class="empty">
+            Шукаємо джерела...
+        </div>
+    `;
+
+
+    try {
+
+        const response = await fetch(
+            "http://127.0.0.1:8000/api/search",
+            {
+                method: "POST",
+
+                headers: {
+                    "Content-Type": "application/json"
+                },
+
+                body: JSON.stringify({
+
+                    query: query,
+
+                    year_from: Number(yearFrom),
+
+                    year_to: Number(yearTo),
+
+                    limit: 20
+
+                })
+            }
+        );
+
+
+        if (!response.ok) {
+
+            const errorText =
+                await response.text();
+
+            throw new Error(
+                "Помилка сервера: " +
+                response.status +
+                " " +
+                errorText
+            );
+
+        }
+
+
+        const data =
+            await response.json();
+
+
+        if (!data.results ||
+            data.results.length === 0) {
+
+            let errorMessage = "";
+
+            if (data.errors) {
+
+                const errors =
+                    Object.values(data.errors)
+                    .filter(Boolean);
+
+                if (errors.length) {
+                    errorMessage =
+                        "<br><br>" +
+                        errors.join("<br>");
+                }
+            }
+
+            resultsContainer.innerHTML = `
+                <div class="empty">
+
+                    Джерел не знайдено.
+
+                    <br><br>
+
+                    Спробуйте змінити тему
+                    або діапазон років.
+
+                    ${errorMessage}
+
+                </div>
+            `;
+
+            return;
+        }
+
+
+        const sources =
+            data.sources || {};
+
+
+        const scholarCount =
+            sources.google_scholar || 0;
+
+
+        const openAlexCount =
+            sources.openalex || 0;
+
+
+        const totalCount =
+            data.total ||
+            data.results.length;
+
+
+        const stats = `
+
+            <div class="stats">
+
+                <strong>
+                    Знайдено джерел: ${totalCount}
+                </strong>
+
+                <br><br>
+
+                Google Scholar:
+                ${scholarCount}
+
+                <br>
+
+                OpenAlex:
+                ${openAlexCount}
+
+            </div>
+
+        `;
+
+
+        const results =
+            data.results.map(source => {
+
+                const authors =
+                    source.authors &&
+                    source.authors.length
+
+                    ? source.authors.join(", ")
+
+                    : "Автор не вказаний";
+
+
+                const year =
+                    source.year || "";
+
+
+                const journal =
+                    source.journal
+
+                    ? " · " + source.journal
+
+                    : "";
+
+
+                const abstract =
+                    source.abstract
+
+                    ? `<p>${escapeHtml(
+                        source.abstract
+                    )}</p>`
+
+                    : "";
+
+
+                const link =
+                    source.url
+
+                    ? `
+
+                        <a
+                            href="${source.url}"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                        >
+                            Відкрити джерело →
+                        </a>
+
+                    `
+
+                    : "";
+
+
+                const matchPercent =
+                    source.match_percent !== undefined
+
+                    ? `
+
+                        <div class="match">
+
+                            Відповідність:
+                            <strong>
+                                ${source.match_percent}%
+                            </strong>
+
+                        </div>
+
+                    `
+
+                    : "";
+
+
+                return `
+
+                    <div class="result">
+
+                        <span class="source">
+                            ${escapeHtml(
+                                source.found_in ||
+                                "Джерело"
+                            )}
+                        </span>
+
+                        <h3>
+                            ${escapeHtml(
+                                source.title ||
+                                "Без назви"
+                            )}
+                        </h3>
+
+                        <p>
+                            ${escapeHtml(authors)}
+                        </p>
+
+                        <p>
+
+                            <strong>
+                                ${year}
+                            </strong>
+
+                            ${escapeHtml(journal)}
+
+                        </p>
+
+                        ${matchPercent}
+
+                        ${abstract}
+
+                        ${link}
+
+                    </div>
+
+                `;
+
+            }).join("");
+
+
+        resultsContainer.innerHTML =
+            stats + results;
+
+
+    } catch (error) {
+
+        console.error(error);
+
+
+        resultsContainer.innerHTML = `
+
+            <div class="empty">
+
+                Не вдалося підключитися до сервера.
+
+                <br><br>
+
+                ${escapeHtml(error.message)}
+
+                <br><br>
+
+                Переконайтеся, що backend запущений.
+
+            </div>
+
+        `;
+
+    }
+
+}
+
+
+function escapeHtml(text) {
+
+    return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+
+}
+
+</script>
+
+</body>
+</html>
