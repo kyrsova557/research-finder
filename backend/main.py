@@ -354,49 +354,35 @@ async def search_sources(
             )
         )
 
-        openalex_results, openalex_error = (
-            await search_openalex(
-                client,
-                query,
-                request.year_from,
-                request.year_to,
-                limit
-            )
+        
+        all_results = scholar_results
+
+        results = remove_duplicates(
+            all_results
         )
 
-    all_results = (
-        scholar_results
-        + openalex_results
-    )
-
-    results = remove_duplicates(
-        all_results
-    )
-
-    results.sort(
-        key=lambda item: (
-            item.get("relevance", 0),
-            item.get("match_percent", 0),
-            item.get("cited_by", 0) or 0
-        ),
-        reverse=True
-    )
-
-    results = results[:limit]
-
-    return {
-        "results": results,
-        "total": len(results),
-        "sources": {
-            "google_scholar": len(
-                scholar_results
+        results.sort(
+            key=lambda item: (
+                item.get("relevance", 0),
+                item.get("match_percent", 0),
+                item.get("cited_by", 0) or 0
             ),
-            "openalex": len(
-                openalex_results
-            )
-        },
-        "errors": {
-            "google_scholar": scholar_error,
-            "openalex": openalex_error
+            reverse=True
+        )
+
+        results = results[:limit]
+
+        return {
+            "results": results,
+            "total": len(results),
+            "sources": {
+                "google_scholar": len(
+                    scholar_results
+                ),
+                "openalex": 0
+            },
+            "errors": {
+                "google_scholar": scholar_error,
+                "openalex": None
+            }
         }
-    }
