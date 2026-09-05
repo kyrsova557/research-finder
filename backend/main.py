@@ -4,7 +4,7 @@ from pydantic import BaseModel
 import httpx
 import re
 import os
-import asyncio
+from datetime import datetime
 
 
 app = FastAPI()
@@ -59,11 +59,11 @@ def make_keywords(query: str):
 def relevance_score(title: str, context: str, query: str):
     keywords = make_keywords(query)
 
-    title_lower = title.lower()
-    context_lower = context.lower()
-
     if not keywords:
         return 0, 0
+
+    title_lower = title.lower()
+    context_lower = context.lower()
 
     score = 0
     title_matches = 0
@@ -117,6 +117,91 @@ def year_is_valid(year, year_from, year_to):
     return True
 
 
+def extract_journal(summary: str, year):
+    if not summary:
+        return ""
+
+    text = clean_text(summary)
+
+    if year:
+        year_match = re.search(
+            rf"\b{year}\b",
+            text
+        )
+
+        if year_match:
+            before_year = text[:year_match.start()].strip()
+
+            if " - " in before_year:
+                journal = before_year.split(
+                    " - ",
+                    1
+                )[1].strip()
+            else:
+                journal = before_year
+
+            return journal.rstrip(" ,.;:-")
+
+    return ""
+
+
+def format_bibliography(
+    title,
+    authors,
+    year,
+    summary,
+    url
+):
+    title = clean_text(title)
+
+    authors = [
+        clean_text(a)
+        for a in authors
+        if clean_text(a)
+    ]
+
+    journal = extract_journal(
+        summary,
+        year
+    )
+
+    parts = []
+
+    if authors:
+        parts.append(
+            ", ".join(authors) + "."
+        )
+
+    if title:
+        parts.append(
+            title + "."
+        )
+
+    if journal and journal.lower() not in title.lower():
+        parts.append(
+            journal + "."
+        )
+
+    if year:
+        parts.append(
+            str(year) + "."
+        )
+
+    citation = " ".join(parts)
+
+    if url:
+        date = datetime.now().strftime(
+            "%d.%m.%Y"
+        )
+
+        citation += (
+            f" URL: {url} "
+            f"(дата звернення: {date})."
+        )
+
+    return citation
+
+
 async def search_google_scholar(
     client,
     query,
@@ -158,7 +243,11 @@ async def search_google_scholar(
 
         results = []
 
-        for item in data.get("organic_results", []):
+        for item in data.get(
+            "organic_results",
+            []
+        ):
+
             title = clean_text(
                 item.get("title", "")
             )
@@ -184,6 +273,7 @@ async def search_google_scholar(
                 "authors",
                 []
             ):
+
                 name = clean_text(
                     author.get("name", "")
                 )
@@ -207,29 +297,27 @@ async def search_google_scholar(
             ):
                 continue
 
-            free_url = None
-
             resources = item.get(
                 "resources",
                 []
             )
 
+            free_url = None
+
             for resource in resources:
-                resource_link = resource.get(
+                link = resource.get(
                     "link",
                     ""
                 )
 
-                if resource_link:
-                    free_url = resource_link
+                if link:
+                    free_url = link
                     break
 
-            main_url = item.get(
-                "link",
-                ""
+            final_url = (
+                free_url
+                or item.get("link", "")
             )
-
-            final_url = free_url or main_url
 
             if not final_url:
                 continue
@@ -243,17 +331,29 @@ async def search_google_scholar(
             cited_by = None
 
             if item.get("cited_by"):
-                cited_by = item["cited_by"].get(
-                    "value"
-                )
+                cited_by = item[
+                    "cited_by"
+                ].get("value")
+
+            bibliography = format_bibliography(
+                title,
+                authors,
+                year,
+                summary,
+                final_url
+            )
 
             results.append({
                 "title": title,
                 "authors": authors,
                 "year": year,
-                "journal": summary,
+                "journal": extract_journal(
+                    summary,
+                    year
+                ),
                 "abstract": snippet,
                 "url": final_url,
+                "bibliography": bibliography,
                 "found_in": "Google Scholar",
                 "relevance": score,
                 "match_percent": percentage,
@@ -267,50 +367,35 @@ async def search_google_scholar(
         return [], str(e)
 
 
-
-def normalize_title(title: str):
+def normalize_title(title):
     title = clean_text(
         title.lower()
     )
 
-    title = re.sub(
+    return re.sub(
         r"[^a-zа-яіїєґ0-9 ]",
         "",
         title
     )
-
-    return title
 
 
 def remove_duplicates(results):
     unique = {}
 
     for result in results:
-        title_key = normalize_title(
+
+        key = normalize_title(
             result.get("title", "")
         )
 
-        url = result.get("url", "")
-
-        key = title_key or url
-
         if not key:
-            continue
+            key = result.get(
+                "url",
+                ""
+            )
 
         if key not in unique:
             unique[key] = result
-
-        else:
-            current = unique[key]
-
-            if result.get(
-                "relevance",
-                0
-            ) > current.get(
-                "relevance",
-                0
-            ):
-                unique[key] = result
 
     return list(unique.values())
 
@@ -319,6 +404,7 @@ def remove_duplicates(results):
 async def search_sources(
     request: SearchRequest
 ):
+
     query = request.query.strip()
 
     if not query:
@@ -337,14 +423,10 @@ async def search_sources(
 
     async with httpx.AsyncClient(
         timeout=30,
-        follow_redirects=True,
-        headers={
-            "User-Agent":
-                "ResearchFinder/1.0"
-        }
+        follow_redirects=True
     ) as client:
 
-        scholar_results, scholar_error = (
+        results, error = (
             await search_google_scholar(
                 client,
                 query,
@@ -354,18 +436,15 @@ async def search_sources(
             )
         )
 
-        
-        all_results = scholar_results
-
         results = remove_duplicates(
-            all_results
+            results
         )
 
         results.sort(
-            key=lambda item: (
-                item.get("relevance", 0),
-                item.get("match_percent", 0),
-                item.get("cited_by", 0) or 0
+            key=lambda x: (
+                x.get("relevance", 0),
+                x.get("match_percent", 0),
+                x.get("cited_by", 0) or 0
             ),
             reverse=True
         )
@@ -376,13 +455,9 @@ async def search_sources(
             "results": results,
             "total": len(results),
             "sources": {
-                "google_scholar": len(
-                    scholar_results
-                ),
-                "openalex": 0
+                "google_scholar": len(results)
             },
             "errors": {
-                "google_scholar": scholar_error,
-                "openalex": None
+                "google_scholar": error
             }
         }
