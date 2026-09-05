@@ -118,31 +118,34 @@ def year_is_valid(year, year_from, year_to):
 
 
 def extract_journal(summary: str, year):
-    if not summary:
+    if not summary or not year:
         return ""
 
     text = clean_text(summary)
 
-    if year:
-        year_match = re.search(
-            rf"\b{year}\b",
-            text
-        )
+    year_match = re.search(
+        rf"\b{year}\b",
+        text
+    )
 
-        if year_match:
-            before_year = text[:year_match.start()].strip()
+    if not year_match:
+        return ""
 
-            if " - " in before_year:
-                journal = before_year.split(
-                    " - ",
-                    1
-                )[1].strip()
-            else:
-                journal = before_year
+    before_year = text[:year_match.start()].strip()
 
-            return journal.rstrip(" ,.;:-")
+    if " - " not in before_year:
+        return ""
 
-    return ""
+    journal = before_year.split(
+        " - ",
+        1
+    )[1].strip()
+
+    # Не показываем слишком длинные или подозрительные значения
+    if len(journal) > 120:
+        return ""
+
+    return journal.rstrip(" ,.;:-")
 
 
 def format_bibliography(
