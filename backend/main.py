@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import httpx
 import re
 import os
+import asyncio
 
 
 app = FastAPI()
@@ -273,14 +274,18 @@ async def search_openalex(
     year_to,
     limit
 ):
+    email = os.getenv(
+        "OPENALEX_EMAIL",
+        ""
+    ).strip()
+
     params = {
         "search": query,
-        "per-page": min(limit, 50),
-        "mailto": os.getenv(
-            "OPENALEX_EMAIL",
-            ""
-        )
+        "per-page": min(limit, 20)
     }
+
+    if email:
+        params["mailto"] = email
 
     filters = []
 
@@ -297,10 +302,19 @@ async def search_openalex(
     if filters:
         params["filter"] = ",".join(filters)
 
+    headers = {
+        "User-Agent": (
+            f"ResearchFinder/1.0 (mailto:{email})"
+            if email
+            else "ResearchFinder/1.0"
+        )
+    }
+
     try:
         response = await client.get(
             "https://api.openalex.org/works",
-            params=params
+            params=params,
+            headers=headers
         )
 
         response.raise_for_status()
