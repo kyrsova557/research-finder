@@ -141,11 +141,33 @@ def extract_journal(summary: str, year):
         1
     )[1].strip()
 
-    # Не показываем слишком длинные или подозрительные значения
+    journal = journal.rstrip(
+        " ,.;:-"
+    )
+
+    # Не показываем слишком длинные значения
     if len(journal) > 120:
         return ""
 
-    return journal.rstrip(" ,.;:-")
+    # Не показываем, если Scholar фактически вернул список авторов
+    parts = [
+        part.strip()
+        for part in journal.split(",")
+        if part.strip()
+    ]
+
+    if len(parts) >= 2:
+        first_part = parts[0]
+
+        # Авторские инициалы обычно выглядят примерно так:
+        # "СА Гаркуша", "НЯ Лепіш", "АІ Мельниченко"
+        if re.fullmatch(
+            r"[А-ЯІЇЄҐA-ZЁЙ]{2,4}\s+[А-ЯІЇЄҐA-ZЁЙ][а-яіїєґa-zё]+",
+            first_part
+        ):
+            return ""
+
+    return journal
 
 
 def format_bibliography(
