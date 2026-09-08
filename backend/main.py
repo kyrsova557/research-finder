@@ -1,3 +1,4 @@
+```python
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -464,9 +465,6 @@ def parse_crossref_metadata(doi: str):
             url,
             timeout=15,
             follow_redirects=True,
-            params={
-                "mailto": "research.finder.project@gmail.com"
-            },
             headers={
                 "User-Agent":
                 "Research-Finder/1.0 "
@@ -487,20 +485,12 @@ def parse_crossref_metadata(doi: str):
         if not isinstance(message, dict):
             return result
 
-        # -------------------------
-        # TYPE
-        # -------------------------
-
         result["type"] = clean_text(
             message.get(
                 "type",
                 ""
             )
         ).lower()
-
-        # -------------------------
-        # DOI
-        # -------------------------
 
         returned_doi = clean_text(
             message.get(
@@ -515,10 +505,6 @@ def parse_crossref_metadata(doi: str):
                 f"https://doi.org/"
                 f"{returned_doi}"
             )
-
-        # -------------------------
-        # TITLE
-        # -------------------------
 
         titles = message.get(
             "title",
@@ -541,10 +527,6 @@ def parse_crossref_metadata(doi: str):
             ):
 
                 result["title"] = title
-
-        # -------------------------
-        # AUTHORS
-        # -------------------------
 
         authors = message.get(
             "author",
@@ -592,10 +574,6 @@ def parse_crossref_metadata(doi: str):
                         name
                     )
 
-        # -------------------------
-        # CONTAINER TITLE
-        # -------------------------
-
         containers = message.get(
             "container-title",
             []
@@ -611,12 +589,11 @@ def parse_crossref_metadata(doi: str):
             )
 
             if container_title:
+
                 result["journal"] = (
                     container_title
                 )
 
-                # Для book-chapter container-title
-                # является названием книги/сборника.
                 if result["type"] in {
                     "book-chapter",
                     "book-section"
@@ -625,10 +602,6 @@ def parse_crossref_metadata(doi: str):
                     result["book_title"] = (
                         container_title
                     )
-
-        # -------------------------
-        # VOLUME
-        # -------------------------
 
         volume = clean_text(
             message.get(
@@ -640,10 +613,6 @@ def parse_crossref_metadata(doi: str):
         if volume:
             result["volume"] = volume
 
-        # -------------------------
-        # ISSUE
-        # -------------------------
-
         issue = clean_text(
             message.get(
                 "issue",
@@ -653,10 +622,6 @@ def parse_crossref_metadata(doi: str):
 
         if issue:
             result["issue"] = issue
-
-        # -------------------------
-        # PAGES
-        # -------------------------
 
         first_page = clean_text(
             message.get(
@@ -707,10 +672,6 @@ def parse_crossref_metadata(doi: str):
 
             result["pages"] = first_page
 
-        # -------------------------
-        # PUBLISHER
-        # -------------------------
-
         publisher = clean_text(
             message.get(
                 "publisher",
@@ -720,17 +681,6 @@ def parse_crossref_metadata(doi: str):
 
         if publisher:
             result["publisher"] = publisher
-
-        # -------------------------
-        # YEAR
-        # -------------------------
-
-        # Приоритет:
-        # print -> online -> issued.
-        #
-        # Это помогает не заменять
-        # год выпуска журнала годом
-        # ранней онлайн-публикации.
 
         date_candidates = [
             message.get(
@@ -891,8 +841,6 @@ def parse_pdf_metadata(url: str):
             details
         )
 
-        # JOURNAL
-
         for line in lines:
 
             if (
@@ -903,8 +851,6 @@ def parse_pdf_metadata(url: str):
 
                 result["journal"] = line
                 break
-
-        # SERIES
 
         for line in lines:
 
@@ -923,21 +869,15 @@ def parse_pdf_metadata(url: str):
 
                 break
 
-        # DOI
-
         result["doi"] = (
             extract_doi(full_text)
             or result["doi"]
         )
 
-        # YEAR
-
         result["year"] = (
             extract_year(full_text)
             or result["year"]
         )
-
-        # PAGES
 
         explicit_pages = extract_pages(
             full_text
@@ -946,21 +886,6 @@ def parse_pdf_metadata(url: str):
         if explicit_pages:
 
             result["pages"] = explicit_pages
-
-        else:
-
-            # ВАЖНО:
-            # автоматически вычислять диапазон
-            # по количеству PDF-страниц
-            # больше НЕ будем.
-            #
-            # Такой способ может дать неправильные
-            # страницы из-за титульных листов,
-            # обложек и т.д.
-
-            pass
-
-        # AUTHORS
 
         if result["doi"]:
 
@@ -1004,8 +929,6 @@ def parse_pdf_metadata(url: str):
                         )
                         for author in author_lines
                     ]
-
-        # TITLE
 
         for line in lines:
 
@@ -1285,18 +1208,10 @@ def apply_crossref_metadata(
     if not crossref:
         return item
 
-    # -------------------------
-    # TYPE
-    # -------------------------
-
     if crossref.get("type"):
         item["publication_type"] = (
             crossref["type"]
         )
-
-    # -------------------------
-    # TITLE
-    # -------------------------
 
     if crossref.get("title"):
 
@@ -1304,19 +1219,11 @@ def apply_crossref_metadata(
             crossref["title"]
         )
 
-    # -------------------------
-    # AUTHORS
-    # -------------------------
-
     if crossref.get("authors"):
 
         item["authors"] = (
             crossref["authors"]
         )
-
-    # -------------------------
-    # DOI
-    # -------------------------
 
     if crossref.get("doi"):
 
@@ -1324,19 +1231,11 @@ def apply_crossref_metadata(
             crossref["doi"]
         )
 
-    # -------------------------
-    # YEAR
-    # -------------------------
-
     if crossref.get("year"):
 
         item["year"] = (
             crossref["year"]
         )
-
-    # -------------------------
-    # JOURNAL / BOOK
-    # -------------------------
 
     publication_type = (
         crossref.get(
@@ -1357,11 +1256,8 @@ def apply_crossref_metadata(
             )
 
         item["journal"] = ""
-
         item["series"] = ""
-
         item["volume"] = ""
-
         item["issue"] = ""
 
     else:
@@ -1371,10 +1267,6 @@ def apply_crossref_metadata(
             item["journal"] = (
                 crossref["journal"]
             )
-
-    # -------------------------
-    # VOLUME
-    # -------------------------
 
     if publication_type not in {
         "book-chapter",
@@ -1387,24 +1279,11 @@ def apply_crossref_metadata(
                 crossref["volume"]
             )
 
-    # -------------------------
-    # ISSUE
-    # -------------------------
-
-    if publication_type not in {
-        "book-chapter",
-        "book-section"
-    }:
-
         if crossref.get("issue"):
 
             item["issue"] = (
                 crossref["issue"]
             )
-
-    # -------------------------
-    # PAGES
-    # -------------------------
 
     if crossref.get("pages"):
 
@@ -1516,10 +1395,6 @@ def format_bibliography(
             f"{title}."
         )
 
-    # -------------------------
-    # BOOK CHAPTER
-    # -------------------------
-
     if publication_type in {
         "book-chapter",
         "book-section"
@@ -1566,10 +1441,6 @@ def format_bibliography(
             parts.append(
                 f"{book_part}."
             )
-
-    # -------------------------
-    # JOURNAL ARTICLE
-    # -------------------------
 
     elif journal:
 
@@ -1812,10 +1683,6 @@ async def search_google_scholar(
                 )
             }
 
-            # -------------------------
-            # SOURCE METADATA
-            # -------------------------
-
             if link:
 
                 extra = enrich_from_source(
@@ -1827,10 +1694,6 @@ async def search_google_scholar(
                     extra
                 )
 
-            # -------------------------
-            # CROSSREF
-            # -------------------------
-
             if item_data.get("doi"):
 
                 item_data = (
@@ -1838,17 +1701,6 @@ async def search_google_scholar(
                         item_data
                     )
                 )
-
-            # -------------------------
-            # YEAR FILTER
-            # -------------------------
-
-            if not year_is_valid(
-                item_data.get("year"),
-                year_from,
-                year_to
-            ):
-                continue
 
             item_data["relevance"] = (
                 relevance_score(
@@ -2011,3 +1863,4 @@ async def search(
         "google_scholar_count": len(results),
         "results": results
     }
+```
