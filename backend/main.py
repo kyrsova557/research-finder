@@ -47,7 +47,7 @@ def clean_text(text: str) -> str:
     if not text:
         return ""
 
-    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+", " ", str(text))
     return text.strip()
 
 
@@ -104,9 +104,7 @@ def relevance_score(
     query: str
 ) -> int:
 
-    text = (
-        f"{title} {snippet}"
-    ).lower()
+    text = f"{title} {snippet}".lower()
 
     keywords = make_keywords(query)
 
@@ -128,14 +126,12 @@ def relevance_score(
     if max_score == 0:
         return 0
 
-    result = int(
+    return int(
         min(
             100,
             (score / max_score) * 100
         )
     )
-
-    return result
 
 
 def extract_year(text: str):
@@ -207,13 +203,11 @@ def format_author_name(name: str):
     if not name:
         return ""
 
-    name = re.sub(
+    return re.sub(
         r"\s+",
         " ",
         name
     )
-
-    return name
 
 
 def extract_journal_from_summary(summary: str):
@@ -230,10 +224,7 @@ def extract_journal_from_summary(summary: str):
 
     journal = parts[-1].strip()
 
-    if (
-        "…" in journal
-        or "..." in journal
-    ):
+    if "…" in journal or "..." in journal:
         return ""
 
     return journal
@@ -257,9 +248,7 @@ def extract_doi(text: str):
             ".,;)"
         )
 
-        return (
-            f"https://doi.org/{doi}"
-        )
+        return f"https://doi.org/{doi}"
 
     return ""
 
@@ -269,9 +258,7 @@ def normalize_doi(doi: str):
     if not doi:
         return ""
 
-    doi = clean_text(
-        doi
-    )
+    doi = clean_text(doi)
 
     doi = re.sub(
         r"^https?://doi\.org/",
@@ -352,7 +339,6 @@ def extract_pages(text: str):
         return ""
 
     patterns = [
-
         r"(?:С\.|Стор\.|Сторінки|Pages?|Pp?\.)\s*"
         r"([0-9]+)\s*[-–—]\s*([0-9]+)",
 
@@ -401,25 +387,11 @@ def extract_bibliographic_details(text: str):
 
     text = clean_text(text)
 
-    result["year"] = extract_year(
-        text
-    )
-
-    result["doi"] = extract_doi(
-        text
-    )
-
-    result["volume"] = extract_volume(
-        text
-    )
-
-    result["issue"] = extract_issue(
-        text
-    )
-
-    result["pages"] = extract_pages(
-        text
-    )
+    result["year"] = extract_year(text)
+    result["doi"] = extract_doi(text)
+    result["volume"] = extract_volume(text)
+    result["issue"] = extract_issue(text)
+    result["pages"] = extract_pages(text)
 
     journal_match = re.search(
         r"(Вчені записки[^.]+)",
@@ -454,11 +426,10 @@ def extract_bibliographic_details(text: str):
     return result
 
 
-def parse_crossref_metadata(
-    doi: str
-):
+def parse_crossref_metadata(doi: str):
 
     result = {
+        "type": "",
         "journal": "",
         "series": "",
         "volume": "",
@@ -467,12 +438,12 @@ def parse_crossref_metadata(
         "doi": "",
         "year": None,
         "authors": [],
-        "title": ""
+        "title": "",
+        "book_title": "",
+        "publisher": ""
     }
 
-    doi_value = normalize_doi(
-        doi
-    )
+    doi_value = normalize_doi(doi)
 
     if not doi_value:
         return result
@@ -485,7 +456,7 @@ def parse_crossref_metadata(
         )
 
         url = (
-            "https://api.crossref.org/works/"
+            "https://api.crossref.org/v1/works/"
             f"{encoded_doi}"
         )
 
@@ -493,9 +464,13 @@ def parse_crossref_metadata(
             url,
             timeout=15,
             follow_redirects=True,
+            params={
+                "mailto": "research.finder.project@gmail.com"
+            },
             headers={
                 "User-Agent":
-                "Research-Finder/1.0"
+                "Research-Finder/1.0 "
+                "(academic-source-search)"
             }
         )
 
@@ -509,11 +484,19 @@ def parse_crossref_metadata(
             {}
         )
 
-        if not isinstance(
-            message,
-            dict
-        ):
+        if not isinstance(message, dict):
             return result
+
+        # -------------------------
+        # TYPE
+        # -------------------------
+
+        result["type"] = clean_text(
+            message.get(
+                "type",
+                ""
+            )
+        ).lower()
 
         # -------------------------
         # DOI
@@ -542,14 +525,22 @@ def parse_crossref_metadata(
             []
         )
 
-        if isinstance(
-            titles,
-            list
-        ) and titles:
+        if (
+            isinstance(titles, list)
+            and titles
+        ):
 
-            result["title"] = clean_text(
+            title = clean_text(
                 titles[0]
             )
+
+            if (
+                title
+                and "…" not in title
+                and "..." not in title
+            ):
+
+                result["title"] = title
 
         # -------------------------
         # AUTHORS
@@ -597,15 +588,12 @@ def parse_crossref_metadata(
                 )
 
                 if name:
-
-                    result[
-                        "authors"
-                    ].append(
+                    result["authors"].append(
                         name
                     )
 
         # -------------------------
-        # JOURNAL
+        # CONTAINER TITLE
         # -------------------------
 
         containers = message.get(
@@ -613,47 +601,62 @@ def parse_crossref_metadata(
             []
         )
 
-        if isinstance(
-            containers,
-            list
-        ) and containers:
+        if (
+            isinstance(containers, list)
+            and containers
+        ):
 
-            result["journal"] = clean_text(
+            container_title = clean_text(
                 containers[0]
             )
+
+            if container_title:
+                result["journal"] = (
+                    container_title
+                )
+
+                # Для book-chapter container-title
+                # является названием книги/сборника.
+                if result["type"] in {
+                    "book-chapter",
+                    "book-section"
+                }:
+
+                    result["book_title"] = (
+                        container_title
+                    )
 
         # -------------------------
         # VOLUME
         # -------------------------
 
-        result["volume"] = clean_text(
+        volume = clean_text(
             message.get(
                 "volume",
                 ""
             )
         )
 
+        if volume:
+            result["volume"] = volume
+
         # -------------------------
         # ISSUE
         # -------------------------
 
-        result["issue"] = clean_text(
+        issue = clean_text(
             message.get(
                 "issue",
                 ""
             )
         )
 
+        if issue:
+            result["issue"] = issue
+
         # -------------------------
         # PAGES
         # -------------------------
-
-        page_value = clean_text(
-            message.get(
-                "page",
-                ""
-            )
-        )
 
         first_page = clean_text(
             message.get(
@@ -665,6 +668,13 @@ def parse_crossref_metadata(
         last_page = clean_text(
             message.get(
                 "last-page",
+                ""
+            )
+        )
+
+        page_value = clean_text(
+            message.get(
+                "page",
                 ""
             )
         )
@@ -693,13 +703,42 @@ def parse_crossref_metadata(
 
             result["pages"] = page_value
 
+        elif first_page:
+
+            result["pages"] = first_page
+
+        # -------------------------
+        # PUBLISHER
+        # -------------------------
+
+        publisher = clean_text(
+            message.get(
+                "publisher",
+                ""
+            )
+        )
+
+        if publisher:
+            result["publisher"] = publisher
+
         # -------------------------
         # YEAR
         # -------------------------
 
+        # Приоритет:
+        # print -> online -> issued.
+        #
+        # Это помогает не заменять
+        # год выпуска журнала годом
+        # ранней онлайн-публикации.
+
         date_candidates = [
             message.get(
                 "published-print",
+                {}
+            ),
+            message.get(
+                "published",
                 {}
             ),
             message.get(
@@ -726,10 +765,7 @@ def parse_crossref_metadata(
             )
 
             if (
-                isinstance(
-                    date_parts,
-                    list
-                )
+                isinstance(date_parts, list)
                 and date_parts
                 and isinstance(
                     date_parts[0],
@@ -855,9 +891,7 @@ def parse_pdf_metadata(url: str):
             details
         )
 
-        # -------------------------
         # JOURNAL
-        # -------------------------
 
         for line in lines:
 
@@ -870,9 +904,7 @@ def parse_pdf_metadata(url: str):
                 result["journal"] = line
                 break
 
-        # -------------------------
         # SERIES
-        # -------------------------
 
         for line in lines:
 
@@ -891,27 +923,21 @@ def parse_pdf_metadata(url: str):
 
                 break
 
-        # -------------------------
         # DOI
-        # -------------------------
 
         result["doi"] = (
             extract_doi(full_text)
             or result["doi"]
         )
 
-        # -------------------------
         # YEAR
-        # -------------------------
 
         result["year"] = (
             extract_year(full_text)
             or result["year"]
         )
 
-        # -------------------------
         # PAGES
-        # -------------------------
 
         explicit_pages = extract_pages(
             full_text
@@ -923,43 +949,18 @@ def parse_pdf_metadata(url: str):
 
         else:
 
-            first_page_number = None
+            # ВАЖНО:
+            # автоматически вычислять диапазон
+            # по количеству PDF-страниц
+            # больше НЕ будем.
+            #
+            # Такой способ может дать неправильные
+            # страницы из-за титульных листов,
+            # обложек и т.д.
 
-            for line in lines[:40]:
+            pass
 
-                if re.fullmatch(
-                    r"\d{1,4}",
-                    line
-                ):
-
-                    number = int(line)
-
-                    if (
-                        1 <= number <= 10000
-                    ):
-
-                        first_page_number = number
-                        break
-
-            if (
-                first_page_number is not None
-                and len(reader.pages) > 1
-            ):
-
-                last_page = (
-                    first_page_number
-                    + len(reader.pages)
-                    - 1
-                )
-
-                result["pages"] = (
-                    f"{first_page_number}–"
-                    f"{last_page}"
-                )
-
-        # -------------------------
         # AUTHORS
-        # -------------------------
 
         if result["doi"]:
 
@@ -983,9 +984,7 @@ def parse_pdf_metadata(url: str):
                     if not line:
                         continue
 
-                    if (
-                        len(author_lines) >= 5
-                    ):
+                    if len(author_lines) >= 5:
                         break
 
                     if re.search(
@@ -1006,9 +1005,7 @@ def parse_pdf_metadata(url: str):
                         for author in author_lines
                     ]
 
-        # -------------------------
         # TITLE
-        # -------------------------
 
         for line in lines:
 
@@ -1020,7 +1017,6 @@ def parse_pdf_metadata(url: str):
             ):
 
                 result["title"] = line
-
                 break
 
             if (
@@ -1029,7 +1025,6 @@ def parse_pdf_metadata(url: str):
             ):
 
                 result["title"] = line
-
                 break
 
         return result
@@ -1134,10 +1129,8 @@ def parse_html_metadata(
             )
         )
 
-        result["pages"] = (
-            meta_content(
-                "citation_firstpage"
-            )
+        first_page = meta_content(
+            "citation_firstpage"
         )
 
         last_page = meta_content(
@@ -1145,14 +1138,18 @@ def parse_html_metadata(
         )
 
         if (
-            result["pages"]
+            first_page
             and last_page
         ):
 
             result["pages"] = (
-                f"{result['pages']}–"
+                f"{first_page}–"
                 f"{last_page}"
             )
+
+        elif first_page:
+
+            result["pages"] = first_page
 
         if not result["pages"]:
 
@@ -1161,10 +1158,7 @@ def parse_html_metadata(
             )
 
             if citation_pages:
-
-                result["pages"] = (
-                    citation_pages
-                )
+                result["pages"] = citation_pages
 
         result["volume"] = (
             meta_content(
@@ -1291,29 +1285,131 @@ def apply_crossref_metadata(
     if not crossref:
         return item
 
-    # Crossref має пріоритет,
-    # коли містить конкретне поле.
+    # -------------------------
+    # TYPE
+    # -------------------------
 
-    for key in [
-        "title",
-        "journal",
-        "volume",
-        "issue",
-        "pages",
-        "year",
-        "doi"
-    ]:
+    if crossref.get("type"):
+        item["publication_type"] = (
+            crossref["type"]
+        )
 
-        if crossref.get(key):
+    # -------------------------
+    # TITLE
+    # -------------------------
 
-            item[key] = crossref[key]
+    if crossref.get("title"):
 
-    if crossref.get(
-        "authors"
-    ):
+        item["title"] = (
+            crossref["title"]
+        )
+
+    # -------------------------
+    # AUTHORS
+    # -------------------------
+
+    if crossref.get("authors"):
 
         item["authors"] = (
             crossref["authors"]
+        )
+
+    # -------------------------
+    # DOI
+    # -------------------------
+
+    if crossref.get("doi"):
+
+        item["doi"] = (
+            crossref["doi"]
+        )
+
+    # -------------------------
+    # YEAR
+    # -------------------------
+
+    if crossref.get("year"):
+
+        item["year"] = (
+            crossref["year"]
+        )
+
+    # -------------------------
+    # JOURNAL / BOOK
+    # -------------------------
+
+    publication_type = (
+        crossref.get(
+            "type",
+            ""
+        )
+    )
+
+    if publication_type in {
+        "book-chapter",
+        "book-section"
+    }:
+
+        if crossref.get("book_title"):
+
+            item["book_title"] = (
+                crossref["book_title"]
+            )
+
+        item["journal"] = ""
+
+        item["series"] = ""
+
+        item["volume"] = ""
+
+        item["issue"] = ""
+
+    else:
+
+        if crossref.get("journal"):
+
+            item["journal"] = (
+                crossref["journal"]
+            )
+
+    # -------------------------
+    # VOLUME
+    # -------------------------
+
+    if publication_type not in {
+        "book-chapter",
+        "book-section"
+    }:
+
+        if crossref.get("volume"):
+
+            item["volume"] = (
+                crossref["volume"]
+            )
+
+    # -------------------------
+    # ISSUE
+    # -------------------------
+
+    if publication_type not in {
+        "book-chapter",
+        "book-section"
+    }:
+
+        if crossref.get("issue"):
+
+            item["issue"] = (
+                crossref["issue"]
+            )
+
+    # -------------------------
+    # PAGES
+    # -------------------------
+
+    if crossref.get("pages"):
+
+        item["pages"] = (
+            crossref["pages"]
         )
 
     return item
@@ -1339,6 +1435,13 @@ def format_bibliography(
         )
     )
 
+    publication_type = clean_text(
+        item.get(
+            "publication_type",
+            ""
+        )
+    ).lower()
+
     journal = clean_text(
         item.get(
             "journal",
@@ -1349,6 +1452,13 @@ def format_bibliography(
     series = clean_text(
         item.get(
             "series",
+            ""
+        )
+    )
+
+    book_title = clean_text(
+        item.get(
+            "book_title",
             ""
         )
     )
@@ -1395,18 +1505,73 @@ def format_bibliography(
     parts = []
 
     if author_text:
+
         parts.append(
             f"{author_text}."
         )
 
     if title:
+
         parts.append(
             f"{title}."
         )
 
-    journal_part = ""
+    # -------------------------
+    # BOOK CHAPTER
+    # -------------------------
 
-    if journal:
+    if publication_type in {
+        "book-chapter",
+        "book-section"
+    }:
+
+        book_part = ""
+
+        if book_title:
+
+            book_part = (
+                f"In: {book_title}"
+            )
+
+        if year:
+
+            if book_part:
+
+                book_part += (
+                    f". {year}"
+                )
+
+            else:
+
+                book_part = str(
+                    year
+                )
+
+        if pages:
+
+            if book_part:
+
+                book_part += (
+                    f". P. {pages}"
+                )
+
+            else:
+
+                book_part = (
+                    f"P. {pages}"
+                )
+
+        if book_part:
+
+            parts.append(
+                f"{book_part}."
+            )
+
+    # -------------------------
+    # JOURNAL ARTICLE
+    # -------------------------
+
+    elif journal:
 
         journal_part = journal
 
@@ -1490,11 +1655,9 @@ async def search_google_scholar(
     }
 
     if year_from is not None:
-
         params["as_ylo"] = year_from
 
     if year_to is not None:
-
         params["as_yhi"] = year_to
 
     try:
@@ -1618,9 +1781,6 @@ async def search_google_scholar(
                 )
             )
 
-            # Спробуємо знайти DOI
-            # ще до звернення до джерела.
-
             doi = extract_doi(
                 summary
             )
@@ -1642,6 +1802,8 @@ async def search_google_scholar(
                 "pages": "",
                 "doi": doi,
                 "year": year,
+                "publication_type": "",
+                "book_title": "",
                 "source": "Google Scholar",
                 "relevance": relevance_score(
                     title,
@@ -1650,9 +1812,9 @@ async def search_google_scholar(
                 )
             }
 
-            # Якщо є PDF або HTML,
-            # отримуємо додаткові
-            # бібліографічні дані.
+            # -------------------------
+            # SOURCE METADATA
+            # -------------------------
 
             if link:
 
@@ -1665,18 +1827,28 @@ async def search_google_scholar(
                     extra
                 )
 
-            # Якщо DOI відомий,
-            # перевіряємо його через Crossref.
+            # -------------------------
+            # CROSSREF
+            # -------------------------
 
-            if item_data.get(
-                "doi"
-            ):
+            if item_data.get("doi"):
 
                 item_data = (
                     apply_crossref_metadata(
                         item_data
                     )
                 )
+
+            # -------------------------
+            # YEAR FILTER
+            # -------------------------
+
+            if not year_is_valid(
+                item_data.get("year"),
+                year_from,
+                year_to
+            ):
+                continue
 
             item_data["relevance"] = (
                 relevance_score(
