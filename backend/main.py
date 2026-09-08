@@ -1,4 +1,3 @@
-```python
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -688,4 +687,3 @@ async def search_sources(
             "google_scholar": scholar_error
         }
     }
-```
