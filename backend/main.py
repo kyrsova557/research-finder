@@ -5,7 +5,11 @@ import httpx
 import re
 import os
 from datetime import datetime
-from bs4 import BeautifulSoup
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
 
 try:
     from pypdf import PdfReader
@@ -14,6 +18,7 @@ except ImportError:
 
 
 app = FastAPI()
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,7 +32,6 @@ class SearchRequest(BaseModel):
     query: str
     year_from: int | None = None
     year_to: int | None = None
-    limit: int = 20
 
 
 @app.get("/health")
@@ -38,98 +42,134 @@ def health():
     }
 
 
-def clean_text(text: str):
+def clean_text(text: str) -> str:
     if not text:
         return ""
 
-    text = text.replace("\u00ad", "")
-    text = text.replace("\u00a0", " ")
-    text = text.replace("\u2010", "-")
-    text = text.replace("\u2011", "-")
-    text = text.replace("\u2012", "–")
-    text = text.replace("\u2013", "–")
-    text = text.replace("\u2014", "—")
-
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
-def clean_line(text: str):
-    return clean_text(text).strip(" .,:;")
+def clean_line(text: str) -> str:
+    text = clean_text(text)
+    text = text.strip("•|")
+    return text.strip()
 
 
 def make_keywords(query: str):
     words = re.findall(
-        r"[а-яіїєґa-z0-9]+",
+        r"[A-Za-zА-Яа-яІіЇїЄєҐґ0-9]+",
         query.lower()
     )
 
     stop_words = {
-        "і", "й", "та", "або", "для", "про",
-        "на", "у", "в", "з", "до", "як",
-        "the", "and", "or", "for", "of",
-        "in", "on", "to", "a", "an"
+        "і",
+        "й",
+        "та",
+        "або",
+        "в",
+        "у",
+        "на",
+        "до",
+        "з",
+        "із",
+        "за",
+        "для",
+        "про",
+        "по",
+        "як",
+        "що",
+        "the",
+        "and",
+        "of",
+        "to",
+        "in",
+        "on",
+        "for",
+        "a",
+        "an"
     }
 
     return [
         word
         for word in words
-        if word not in stop_words and len(word) >= 3
+        if word not in stop_words and len(word) > 2
     ]
 
 
-def relevance_score(title: str, context: str, query: str):
+def relevance_score(
+    title: str,
+    snippet: str,
+    query: str
+) -> int:
+
+    text = (
+        f"{title} {snippet}"
+    ).lower()
+
     keywords = make_keywords(query)
 
     if not keywords:
-        return 0, 0
-
-    title_lower = title.lower()
-    context_lower = context.lower()
+        return 0
 
     score = 0
-    title_matches = 0
 
     for keyword in keywords:
 
-        if keyword in title_lower:
-            score += 10
-            title_matches += 1
-
-        if keyword in context_lower:
+        if keyword in title.lower():
             score += 2
 
-    if title_matches == len(keywords):
-        score += 20
+        elif keyword in text:
+            score += 1
 
-    percentage = round(
+    max_score = len(keywords) * 2
+
+    if max_score == 0:
+        return 0
+
+    result = int(
         min(
             100,
-            (title_matches / len(keywords)) * 100
+            (score / max_score) * 100
         )
     )
 
-    return score, percentage
+    return result
 
 
 def extract_year(text: str):
+
     if not text:
         return None
 
-    match = re.search(
-        r"\b(19\d{2}|20\d{2}|21\d{2})\b",
+    matches = re.findall(
+        r"\b(19\d{2}|20\d{2})\b",
         text
     )
 
-    if match:
-        return int(match.group(1))
+    if not matches:
+        return None
+
+    for year in matches:
+        value = int(year)
+
+        if 1900 <= value <= datetime.now().year:
+            return value
 
     return None
 
 
-def year_is_valid(year, year_from, year_to):
+def year_is_valid(
+    year,
+    year_from,
+    year_to
+):
+
+    if year_from is None and year_to is None:
+        return True
 
     if year is None:
-        return True
+        return False
 
     if year_from is not None and year < year_from:
         return False
@@ -140,148 +180,62 @@ def year_is_valid(year, year_from, year_to):
     return True
 
 
+def format_authors(authors):
+
+    if not authors:
+        return ""
+
+    result = []
+
+    for author in authors:
+
+        author = clean_text(author)
+
+        if not author:
+            continue
+
+        result.append(author)
+
+    return ", ".join(result)
+
+
 def format_author_name(name: str):
-    """
-    Приводит:
-    ОВ Гречановська
-    ОМ Мегем
-
-    к:
-
-    Гречановська О. В.
-    Мегем О. М.
-    """
 
     name = clean_text(name)
 
     if not name:
         return ""
 
-    # Уже нормальный вариант
-    if re.search(
-        r"[А-ЯІЇЄҐ]\.\s*[А-ЯІЇЄҐ]\.",
-        name
-    ):
-        return name
-
-    # Формат:
-    # ОВ Гречановська
-    # ОМ Мегем
-    match = re.fullmatch(
-        r"([А-ЯІЇЄҐA-Z]{1,5})\s+(.+)",
+    name = re.sub(
+        r"\s+",
+        " ",
         name
     )
-
-    if match:
-
-        initials = match.group(1)
-        surname = match.group(2).strip()
-
-        if re.search(
-            r"[А-ЯІЇЄҐA-Z]",
-            surname
-        ):
-            formatted_initials = " ".join(
-                [
-                    letter + "."
-                    for letter in initials
-                ]
-            )
-
-            return (
-                f"{surname} "
-                f"{formatted_initials}"
-            )
 
     return name
 
 
-def format_authors(authors):
-
-    formatted = []
-
-    for author in authors:
-
-        author = format_author_name(author)
-
-        if author and author not in formatted:
-            formatted.append(author)
-
-    return formatted
-
-
-def is_probably_author(text: str):
-
-    if not text:
-        return False
-
-    text = clean_text(text)
-
-    # Гречановська О.В.
-    # Мегем О.М.
-    # Потапюк Л.М.
-    if re.fullmatch(
-        r"[А-ЯІЇЄҐA-Z][а-яіїєґa-zA-Z'-]+"
-        r"\s+[А-ЯІЇЄҐA-Z]\.?\s*[А-ЯІЇЄҐA-Z]?\.?",
-        text
-    ):
-        return True
-
-    # ОВ Гречановська
-    if re.fullmatch(
-        r"[А-ЯІЇЄҐA-Z]{1,5}\s+"
-        r"[А-ЯІЇЄҐA-Z][а-яіїєґa-zA-Z'-]+",
-        text
-    ):
-        return True
-
-    return False
-
-
-def extract_journal_from_summary(summary: str, year):
+def extract_journal_from_summary(summary: str):
 
     if not summary:
         return ""
 
-    text = clean_text(summary)
+    summary = clean_text(summary)
 
-    if year:
+    parts = summary.split(" - ")
 
-        match = re.search(
-            rf"\b{year}\b",
-            text
-        )
-
-        if match:
-            text = text[:match.start()]
-
-    text = text.strip(
-        " ,.;:-"
-    )
-
-    # Главное:
-    # никогда не показываем обрезанное название Scholar
-    if "…" in text or "..." in text:
+    if len(parts) < 2:
         return ""
 
-    if not text:
+    journal = parts[-1].strip()
+
+    if (
+        "…" in journal
+        or "..." in journal
+    ):
         return ""
 
-    if is_probably_author(text):
-        return ""
-
-    if " - " in text:
-        text = text.split(
-            " - "
-        )[-1].strip()
-
-    if is_probably_author(text):
-        return ""
-
-    if len(text) > 180:
-        return ""
-
-    return text
+    return journal
 
 
 def extract_doi(text: str):
@@ -297,11 +251,11 @@ def extract_doi(text: str):
     )
 
     if match:
-        doi = match.group(1).rstrip(
-            ".,;)"
-        )
+        doi = match.group(1).rstrip(".,;")
 
-        return doi
+        return (
+            f"https://doi.org/{doi}"
+        )
 
     return ""
 
@@ -311,48 +265,10 @@ def extract_volume(text: str):
     if not text:
         return ""
 
-    match = re.search(
-        r"(?:Том|Т\.|Vol\.?|Volume)"
-        r"\s*([0-9]+(?:\s*\([0-9]+\))?)",
-        text,
-        re.IGNORECASE
-    )
-
-    if match:
-        return match.group(1).strip()
-
-    return ""
-
-
-def extract_issue(text: str):
-
-    if not text:
-        return ""
-
-    match = re.search(
-        r"(?:№|No\.|Issue)"
-        r"\s*([0-9]+)",
-        text,
-        re.IGNORECASE
-    )
-
-    if match:
-        return match.group(1)
-
-    return ""
-
-
-def extract_pages(text: str):
-
-    if not text:
-        return ""
-
     patterns = [
-        r"(?:С\.|Стор\.|Pages?|Pp?\.)\s*"
-        r"([0-9]+(?:\s*[-–—]\s*[0-9]+)?)",
-
-        r"\bpages?\s*[:.]?\s*"
-        r"([0-9]+(?:\s*[-–—]\s*[0-9]+)?)"
+        r"\bТом\s+([0-9]+(?:\s*\([0-9]+\))?)",
+        r"\bТ\.\s*([0-9]+(?:\s*\([0-9]+\))?)",
+        r"\bVol\.\s*([0-9]+)"
     ]
 
     for pattern in patterns:
@@ -371,58 +287,205 @@ def extract_pages(text: str):
     return ""
 
 
+def extract_issue(text: str):
+
+    if not text:
+        return ""
+
+    patterns = [
+        r"\b№\s*([0-9]+)",
+        r"\bNo\.\s*([0-9]+)",
+        r"\bIssue\s*([0-9]+)"
+    ]
+
+    for pattern in patterns:
+
+        match = re.search(
+            pattern,
+            text,
+            re.IGNORECASE
+        )
+
+        if match:
+            return clean_text(
+                match.group(1)
+            )
+
+    return ""
+
+
+def extract_pages(text: str):
+
+    if not text:
+        return ""
+
+    patterns = [
+
+        r"(?:С\.|Стор\.|Сторінки|Pages?|Pp?\.)\s*"
+        r"([0-9]+)\s*[-–—]\s*([0-9]+)",
+
+        r"(?:С\.|Стор\.|Сторінки|Pages?|Pp?\.)\s*"
+        r"([0-9]+)"
+    ]
+
+    for pattern in patterns:
+
+        match = re.search(
+            pattern,
+            text,
+            re.IGNORECASE
+        )
+
+        if match:
+
+            if len(match.groups()) == 2:
+
+                return (
+                    f"{match.group(1)}–"
+                    f"{match.group(2)}"
+                )
+
+            return clean_text(
+                match.group(1)
+            )
+
+    return ""
+
+
 def extract_bibliographic_details(text: str):
 
-    return {
-        "volume": extract_volume(text),
-        "issue": extract_issue(text),
-        "pages": extract_pages(text),
-        "doi": extract_doi(text)
+    result = {
+        "journal": "",
+        "series": "",
+        "volume": "",
+        "issue": "",
+        "pages": "",
+        "doi": "",
+        "year": None
     }
 
+    if not text:
+        return result
 
-def parse_pdf_metadata(pdf_bytes: bytes):
+    text = clean_text(text)
+
+    result["year"] = extract_year(text)
+
+    result["doi"] = extract_doi(text)
+
+    result["volume"] = extract_volume(text)
+
+    result["issue"] = extract_issue(text)
+
+    result["pages"] = extract_pages(text)
+
+    journal_match = re.search(
+        r"(Вчені записки[^.]+)",
+        text,
+        re.IGNORECASE
+    )
+
+    if journal_match:
+
+        journal = clean_text(
+            journal_match.group(1)
+        )
+
+        if (
+            "…" not in journal
+            and "..." not in journal
+        ):
+            result["journal"] = journal
+
+    series_match = re.search(
+        r"Серія\s*:\s*([^.\n]+)",
+        text,
+        re.IGNORECASE
+    )
+
+    if series_match:
+
+        result["series"] = clean_text(
+            series_match.group(1)
+        )
+
+    return result
+
+
+def parse_pdf_metadata(url: str):
+
+    result = {
+        "journal": "",
+        "series": "",
+        "volume": "",
+        "issue": "",
+        "pages": "",
+        "doi": "",
+        "year": None,
+        "authors": [],
+        "title": ""
+    }
 
     if PdfReader is None:
-        return {}
+        return result
 
     try:
 
-        from io import BytesIO
-
-        reader = PdfReader(
-            BytesIO(pdf_bytes)
+        response = httpx.get(
+            url,
+            timeout=15,
+            follow_redirects=True
         )
 
-        if not reader.pages:
-            return {}
+        content_type = response.headers.get(
+            "content-type",
+            ""
+        ).lower()
 
-        # Берём первые страницы.
-        # Именно там обычно находятся:
-        # журнал
-        # том
-        # номер
-        # DOI
-        # авторы
-        # название статьи
-        first_pages = []
+        if (
+            response.status_code != 200
+            or "pdf" not in content_type
+        ):
+            return result
 
-        for page in reader.pages[:2]:
+        temp_path = "/tmp/research_finder.pdf"
 
-            try:
-                text = page.extract_text() or ""
+        with open(
+            temp_path,
+            "wb"
+        ) as file:
 
-                if text:
-                    first_pages.append(text)
+            file.write(
+                response.content
+            )
 
-            except Exception:
-                pass
+        reader = PdfReader(
+            temp_path
+        )
 
-        if not first_pages:
-            return {}
+        pages_to_read = min(
+            2,
+            len(reader.pages)
+        )
+
+        text_parts = []
+
+        for index in range(
+            pages_to_read
+        ):
+
+            page_text = (
+                reader.pages[index]
+                .extract_text()
+                or ""
+            )
+
+            text_parts.append(
+                page_text
+            )
 
         full_text = "\n".join(
-            first_pages
+            text_parts
         )
 
         lines = [
@@ -431,33 +494,32 @@ def parse_pdf_metadata(pdf_bytes: bytes):
             if clean_line(line)
         ]
 
-        result = {
-            "journal": "",
-            "series": "",
-            "volume": "",
-            "issue": "",
-            "pages": "",
-            "doi": "",
-            "authors": [],
-            "title": "",
-        }
+        details = extract_bibliographic_details(
+            full_text
+        )
 
-        # --------------------------------
-        # ЖУРНАЛ
-        # --------------------------------
+        result.update(
+            details
+        )
+
+        # -------------------------
+        # JOURNAL
+        # -------------------------
 
         for line in lines:
 
             if (
                 "Вчені записки" in line
-                and len(line) < 250
+                and "…" not in line
+                and "..." not in line
             ):
+
                 result["journal"] = line
                 break
 
-        # --------------------------------
-        # СЕРИЯ
-        # --------------------------------
+        # -------------------------
+        # SERIES
+        # -------------------------
 
         for line in lines:
 
@@ -469,87 +531,76 @@ def parse_pdf_metadata(pdf_bytes: bytes):
                 )
 
                 if series_match:
-                    result["series"] = (
+
+                    result["series"] = clean_text(
                         series_match.group(1)
-                        .strip()
                     )
 
                 break
 
-        # --------------------------------
-        # ТОМ
-        # --------------------------------
-
-        for line in lines:
-
-            volume = extract_volume(line)
-
-            if volume:
-                result["volume"] = volume
-                break
-
-        # --------------------------------
-        # НОМЕР
-        # --------------------------------
-
-        for line in lines:
-
-            issue = extract_issue(line)
-
-            if issue:
-                result["issue"] = issue
-                break
-
-        # --------------------------------
+        # -------------------------
         # DOI
-        # --------------------------------
+        # -------------------------
 
-        result["doi"] = extract_doi(
+        result["doi"] = (
+            extract_doi(full_text)
+            or result["doi"]
+        )
+
+        # -------------------------
+        # YEAR
+        # -------------------------
+
+        result["year"] = (
+            extract_year(full_text)
+            or result["year"]
+        )
+
+        # -------------------------
+        # PAGES
+        # -------------------------
+
+        explicit_pages = extract_pages(
             full_text
         )
 
-        # --------------------------------
-        # ГОД
-        # --------------------------------
+        if explicit_pages:
 
-        year = extract_year(
-            full_text[:2500]
-        )
+            result["pages"] = explicit_pages
 
-        result["year"] = year
+        else:
 
-        # --------------------------------
-        # СТРАНИЦЫ PDF
-        # --------------------------------
+            # Якщо на першій сторінці PDF
+            # є номер сторінки статті,
+            # визначаємо весь діапазон
+            # за кількістю сторінок PDF.
 
-        first_page_number = None
+            first_page_number = None
 
-        # Часто номер страницы стоит
-        # отдельной строкой в начале PDF
-        for line in lines[:15]:
+            for line in lines[:40]:
 
-            if re.fullmatch(
-                r"\d{1,4}",
-                line
+                if re.fullmatch(
+                    r"\d{1,4}",
+                    line
+                ):
+
+                    number = int(line)
+
+                    if (
+                        1 <= number <= 10000
+                    ):
+
+                        first_page_number = number
+                        break
+
+            if (
+                first_page_number is not None
+                and len(reader.pages) > 1
             ):
-
-                number = int(line)
-
-                if 1 <= number <= 10000:
-                    first_page_number = number
-                    break
-
-        if first_page_number is not None:
-
-            total_pages = len(
-                reader.pages
-            )
-
-            if total_pages > 1:
 
                 last_page = (
                     first_page_number
-                    + total_pages
+                    + len(reader.pages)
                     - 1
                 )
 
@@ -558,142 +609,91 @@ def parse_pdf_metadata(pdf_bytes: bytes):
                     f"{last_page}"
                 )
 
-        # Если в тексте явно указаны страницы
-        explicit_pages = extract_pages(
-            full_text
-        )
+        # -------------------------
+        # AUTHORS
+        # -------------------------
 
-        if explicit_pages:
-            result["pages"] = explicit_pages
+        if result["doi"]:
 
-        # --------------------------------
-        # АВТОРЫ
-        # --------------------------------
+            doi_position = full_text.find(
+                result["doi"]
+            )
 
-        doi_index = -1
+            if doi_position >= 0:
 
-        for i, line in enumerate(lines):
+                after_doi = full_text[
+                    doi_position
+                    + len(result["doi"]):
+                ]
 
-            if "DOI" in line.upper():
-                doi_index = i
-                break
+                author_lines = []
 
-        # Авторы обычно находятся
-        # после DOI и перед названием
-        search_start = (
-            doi_index + 1
-            if doi_index >= 0
-            else 0
-        )
+                for line in after_doi.splitlines():
 
-        candidate_authors = []
+                    line = clean_line(line)
 
-        for line in lines[
-            search_start:
-            search_start + 15
-        ]:
+                    if not line:
+                        continue
+
+                    if (
+                        len(author_lines) >= 5
+                    ):
+                        break
+
+                    if re.search(
+                        r"[А-ЯІЇЄҐ][а-яіїєґ]+",
+                        line
+                    ):
+
+                        author_lines.append(
+                            line
+                        )
+
+                if author_lines:
+
+                    result["authors"] = [
+                        format_author_name(
+                            author
+                        )
+                        for author in author_lines
+                    ]
+
+        # -------------------------
+        # TITLE
+        # -------------------------
+
+        for index, line in enumerate(lines):
+
+            upper_line = line.upper()
 
             if (
-                "УДК" in line
-                or "ВПЛИВ " in line.upper()
-                or "ВПЛИВ СОЦІАЛЬНИХ" in line.upper()
+                "ВПЛИВ СОЦІАЛЬНИХ МЕРЕЖ"
+                in upper_line
             ):
+
+                result["title"] = line
+
                 break
 
-            # Гречановська О.В.
-            # Мегем О.М.
-            # Потапюк Л.М.
-            author_match = re.fullmatch(
-                r"([А-ЯІЇЄҐA-Z][а-яіїєґa-zA-Z'-]+)"
-                r"\s+"
-                r"([А-ЯІЇЄҐA-Z]\.?\s*"
-                r"[А-ЯІЇЄҐA-Z]?\.?)",
-                line
-            )
-
-            if author_match:
-
-                surname = (
-                    author_match.group(1)
-                )
-
-                initials = (
-                    author_match.group(2)
-                    .replace(" ", "")
-                )
-
-                if "." not in initials:
-                    initials = " ".join(
-                        [
-                            char + "."
-                            for char in initials
-                            if char.isalpha()
-                        ]
-                    )
-
-                candidate_authors.append(
-                    f"{surname} {initials}"
-                )
-
-        if candidate_authors:
-            result["authors"] = (
-                candidate_authors
-            )
-
-        # --------------------------------
-        # НАЗВАНИЕ
-        # --------------------------------
-
-        title_lines = []
-
-        found_title = False
-
-        for line in lines:
-
-            upper = line.upper()
-
             if (
-                "ВПЛИВ СОЦІАЛЬНИХ МЕРЕЖ" in upper
-                or "THE IMPACT OF SOCIAL" in upper
+                "THE IMPACT OF SOCIAL"
+                in upper_line
             ):
 
-                found_title = True
+                result["title"] = line
 
-            if found_title:
-
-                # Не захватываем аннотацию
-                if (
-                    line.startswith("Стаття")
-                    or line.startswith("The article")
-                    or line.startswith("Анотація")
-                ):
-                    break
-
-                # Не добавляем служебные строки
-                if (
-                    "DOI" not in line.upper()
-                    and "УДК" not in line.upper()
-                ):
-                    title_lines.append(line)
-
-                # Обычно название занимает
-                # 1–3 строки
-                if len(title_lines) >= 4:
-                    break
-
-        if title_lines:
-
-            result["title"] = clean_text(
-                " ".join(title_lines)
-            )
+                break
 
         return result
 
     except Exception:
-        return {}
+
+        return result
 
 
-def parse_html_metadata(html: str):
+def parse_html_metadata(
+    html: str
+):
 
     result = {
         "journal": "",
@@ -702,12 +702,15 @@ def parse_html_metadata(html: str):
         "issue": "",
         "pages": "",
         "doi": "",
+        "year": None,
         "authors": [],
-        "title": "",
-        "year": None
+        "title": ""
     }
 
-    if not html:
+    if (
+        not html
+        or BeautifulSoup is None
+    ):
         return result
 
     try:
@@ -727,26 +730,60 @@ def parse_html_metadata(html: str):
             )
 
             if tag:
+
                 return clean_text(
-                    tag.get("content", "")
+                    tag.get(
+                        "content",
+                        ""
+                    )
                 )
 
             return ""
 
-        result["title"] = meta_content(
-            "citation_title"
+        result["title"] = (
+            meta_content(
+                "citation_title"
+            )
         )
 
-        result["journal"] = meta_content(
-            "citation_journal_title"
+        authors = soup.find_all(
+            "meta",
+            attrs={
+                "name": "citation_author"
+            }
         )
 
-        result["volume"] = meta_content(
-            "citation_volume"
+        result["authors"] = [
+            clean_text(
+                author.get(
+                    "content",
+                    ""
+                )
+            )
+            for author in authors
+            if author.get(
+                "content"
+            )
+        ]
+
+        result["journal"] = (
+            meta_content(
+                "citation_journal_title"
+            )
         )
 
-        result["issue"] = meta_content(
-            "citation_issue"
+        result["year"] = extract_year(
+            meta_content(
+                "citation_publication_date"
+            )
+        )
+
+        result["doi"] = (
+            extract_doi(
+                meta_content(
+                    "citation_doi"
+                )
+            )
         )
 
         result["pages"] = (
@@ -763,53 +800,55 @@ def parse_html_metadata(html: str):
             result["pages"]
             and last_page
         ):
+
             result["pages"] = (
                 f"{result['pages']}–"
                 f"{last_page}"
             )
 
-        result["doi"] = (
-            meta_content(
-                "citation_doi"
+        # Деякі сайти зберігають
+        # весь діапазон сторінок
+        # у citation_pages.
+
+        if not result["pages"]:
+
+            citation_pages = meta_content(
+                "citation_pages"
             )
-        )
 
-        result["year"] = extract_year(
-            meta_content(
-                "citation_publication_date"
-            )
-        )
+            if citation_pages:
 
-        authors = soup.find_all(
-            "meta",
-            attrs={
-                "name": "citation_author"
-            }
-        )
-
-        for author in authors:
-
-            value = clean_text(
-                author.get(
-                    "content",
-                    ""
+                result["pages"] = (
+                    citation_pages
                 )
+
+        result["volume"] = (
+            meta_content(
+                "citation_volume"
+            )
+        )
+
+        result["issue"] = (
+            meta_content(
+                "citation_issue"
+            )
+        )
+
+        if not result["doi"]:
+
+            result["doi"] = extract_doi(
+                html
             )
 
-            if value:
-                result["authors"].append(
-                    value
-                )
+        return result
 
     except Exception:
-        pass
 
-    return result
+        return result
 
 
-async def enrich_from_source(
-    client,
-    url
+def enrich_from_source(
+    url: str
 ):
 
     if not url:
@@ -817,238 +856,195 @@ async def enrich_from_source(
 
     try:
 
-        response = await client.get(
+        response = httpx.get(
             url,
+            timeout=15,
+            follow_redirects=True,
             headers={
                 "User-Agent":
-                    "Mozilla/5.0 "
-                    "Research-Finder/1.0"
-            },
-            timeout=12
+                "Mozilla/5.0 "
+                "Research Finder"
+            }
         )
 
-        response.raise_for_status()
+        if response.status_code != 200:
+            return {}
 
-        content_type = (
-            response.headers.get(
-                "content-type",
-                ""
-            ).lower()
-        )
+        content_type = response.headers.get(
+            "content-type",
+            ""
+        ).lower()
 
-        content = response.content
-
-        # --------------------------------
-        # PDF
-        # --------------------------------
-
-        if (
-            "application/pdf" in content_type
-            or url.lower().split("?")[0].endswith(
-                ".pdf"
-            )
-        ):
-
-            # Защита от огромных файлов
-            if len(content) > 12 * 1024 * 1024:
-                return {}
+        if "pdf" in content_type:
 
             return parse_pdf_metadata(
-                content
+                url
             )
 
-        # --------------------------------
-        # HTML
-        # --------------------------------
-
-        if (
-            "text/html" in content_type
-            or "<html" in content[:1000].lower().decode(
-                "utf-8",
-                errors="ignore"
-            )
-        ):
-
-            html = content.decode(
-                "utf-8",
-                errors="ignore"
-            )
-
-            return parse_html_metadata(
-                html
-            )
+        return parse_html_metadata(
+            response.text
+        )
 
     except Exception:
-        pass
 
-    return {}
+        return {}
 
 
 def merge_metadata(
-    scholar_title,
-    scholar_authors,
-    scholar_year,
-    scholar_summary,
-    source_data
+    original,
+    extra
 ):
 
-    title = scholar_title
-    authors = scholar_authors[:]
-    year = scholar_year
+    if not extra:
+        return original
 
-    journal = extract_journal_from_summary(
-        scholar_summary,
-        scholar_year
-    )
+    for key in [
+        "journal",
+        "series",
+        "volume",
+        "issue",
+        "pages",
+        "doi",
+        "year",
+        "title"
+    ]:
 
-    details = extract_bibliographic_details(
-        scholar_summary
-    )
+        if (
+            not original.get(key)
+            and extra.get(key)
+        ):
 
-    if source_data:
+            original[key] = extra[key]
 
-        # --------------------------------
-        # TITLE
-        # --------------------------------
-
-        if source_data.get("title"):
-            title = clean_text(
-                source_data["title"]
-            )
-
-        # --------------------------------
-        # AUTHORS
-        # --------------------------------
-
-        if source_data.get("authors"):
-            authors = source_data[
-                "authors"
-            ]
-
-        # --------------------------------
-        # YEAR
-        # --------------------------------
-
-        if source_data.get("year"):
-            year = source_data[
-                "year"
-            ]
-
-        # --------------------------------
-        # JOURNAL
-        # --------------------------------
-
-        if source_data.get("journal"):
-
-            journal = clean_text(
-                source_data["journal"]
-            )
-
-        # --------------------------------
-        # VOLUME
-        # --------------------------------
-
-        if source_data.get("volume"):
-
-            details["volume"] = clean_text(
-                source_data["volume"]
-            )
-
-        # --------------------------------
-        # ISSUE
-        # --------------------------------
-
-        if source_data.get("issue"):
-
-            details["issue"] = clean_text(
-                source_data["issue"]
-            )
-
-        # --------------------------------
-        # PAGES
-        # --------------------------------
-
-        if source_data.get("pages"):
-
-            details["pages"] = clean_text(
-                source_data["pages"]
-            )
-
-        # --------------------------------
-        # DOI
-        # --------------------------------
-
-        if source_data.get("doi"):
-
-            details["doi"] = extract_doi(
-                source_data["doi"]
-            ) or source_data["doi"]
-
-    authors = format_authors(
-        authors
-    )
-
-    # НИКОГДА не возвращаем обрезанное название
     if (
-        journal
-        and (
-            "…" in journal
-            or "..." in journal
-        )
+        not original.get("authors")
+        and extra.get("authors")
     ):
-        journal = ""
 
-    return {
-        "title": title,
-        "authors": authors,
-        "year": year,
-        "journal": journal,
-        "volume": details["volume"],
-        "issue": details["issue"],
-        "pages": details["pages"],
-        "doi": details["doi"]
-    }
+        original["authors"] = (
+            extra["authors"]
+        )
+
+    return original
 
 
 def format_bibliography(
-    title,
-    authors,
-    year,
-    journal,
-    volume,
-    issue,
-    pages,
-    doi,
-    url
+    item
 ):
+
+    authors = item.get(
+        "authors",
+        []
+    )
+
+    author_text = format_authors(
+        authors
+    )
+
+    title = clean_text(
+        item.get(
+            "title",
+            ""
+        )
+    )
+
+    journal = clean_text(
+        item.get(
+            "journal",
+            ""
+        )
+    )
+
+    series = clean_text(
+        item.get(
+            "series",
+            ""
+        )
+    )
+
+    year = item.get(
+        "year"
+    )
+
+    volume = clean_text(
+        item.get(
+            "volume",
+            ""
+        )
+    )
+
+    issue = clean_text(
+        item.get(
+            "issue",
+            ""
+        )
+    )
+
+    pages = clean_text(
+        item.get(
+            "pages",
+            ""
+        )
+    )
+
+    doi = clean_text(
+        item.get(
+            "doi",
+            ""
+        )
+    )
+
+    url = clean_text(
+        item.get(
+            "url",
+            ""
+        )
+    )
 
     parts = []
 
-    if authors:
+    if author_text:
         parts.append(
-            ", ".join(authors) + "."
+            f"{author_text}."
         )
 
     if title:
         parts.append(
-            title + "."
+            f"{title}."
         )
+
+    journal_part = ""
 
     if journal:
 
         journal_part = journal
 
+        if series:
+
+            journal_part += (
+                f". Серія: {series}"
+            )
+
+        if year:
+
+            journal_part += (
+                f". {year}"
+            )
+
         if volume:
+
             journal_part += (
                 f". Т. {volume}"
             )
 
         if issue:
+
             journal_part += (
                 f", № {issue}"
             )
 
         if pages:
+
             journal_part += (
                 f". С. {pages}"
             )
@@ -1060,78 +1056,32 @@ def format_bibliography(
         )
 
     elif year:
+
         parts.append(
             f"{year}."
         )
 
-    if journal and year:
-        # Год ставим после журнала
-        citation = " ".join(parts)
-
-        # Переставляем год перед томом,
-        # если есть том/номер/страницы
-        if volume or issue or pages:
-
-            citation = citation.replace(
-                f". Т. {volume}",
-                f". {year}. Т. {volume}",
-                1
-            ) if volume else citation
-
-            if (
-                not volume
-                and issue
-            ):
-                citation = citation.replace(
-                    f", № {issue}",
-                    f". {year}, № {issue}",
-                    1
-                )
-
-        elif f"{year}." not in citation:
-            citation += f" {year}."
-
-    else:
-        citation = " ".join(parts)
-
     if doi:
 
-        doi_clean = doi.strip()
-
-        if doi_clean.startswith(
-            "https://doi.org/"
-        ):
-            doi_url = doi_clean
-        else:
-            doi_url = (
-                "https://doi.org/"
-                + doi_clean
-            )
-
-        citation += (
-            f" DOI: {doi_url}."
+        parts.append(
+            f"DOI: {doi}."
         )
 
     if url:
 
-        date = datetime.now().strftime(
-            "%d.%m.%Y"
+        parts.append(
+            f"URL: {url}"
         )
 
-        citation += (
-            f" URL: {url} "
-            f"(дата звернення: {date})."
-        )
-
-    return citation
+    return " ".join(
+        parts
+    )
 
 
 async def search_google_scholar(
-    client,
-    query,
-    year_from,
-    year_to,
-    limit
+    query: str,
+    year_from=None,
+    year_to=None
 ):
 
     api_key = os.getenv(
@@ -1139,37 +1089,37 @@ async def search_google_scholar(
     )
 
     if not api_key:
-        return [], (
-            "SERPAPI_KEY не встановлений"
-        )
+        return []
 
     params = {
         "engine": "google_scholar",
         "q": query,
         "api_key": api_key,
-        "hl": "uk",
-        "num": min(limit, 20)
+        "hl": "uk"
     }
 
     if year_from is not None:
+
         params["as_ylo"] = year_from
 
     if year_to is not None:
+
         params["as_yhi"] = year_to
 
     try:
 
-        response = await client.get(
-            "https://serpapi.com/search.json",
-            params=params
-        )
+        async with httpx.AsyncClient(
+            timeout=30
+        ) as client:
 
-        response.raise_for_status()
+            response = await client.get(
+                "https://serpapi.com/search.json",
+                params=params
+            )
 
-        data = response.json()
+            response.raise_for_status()
 
-        if "error" in data:
-            return [], data["error"]
+            data = response.json()
 
         results = []
 
@@ -1185,8 +1135,17 @@ async def search_google_scholar(
                 )
             )
 
-            if not title:
-                continue
+            link = item.get(
+                "link",
+                ""
+            )
+
+            snippet = clean_text(
+                item.get(
+                    "snippet",
+                    ""
+                )
+            )
 
             publication_info = item.get(
                 "publication_info",
@@ -1200,39 +1159,18 @@ async def search_google_scholar(
                 )
             )
 
-            authors = []
-
-            for author in publication_info.get(
-                "authors",
-                []
-            ):
-
-                name = clean_text(
-                    author.get(
-                        "name",
-                        ""
-                    )
-                )
-
-                if name:
-                    authors.append(
-                        name
-                    )
-
-            snippet = clean_text(
-                item.get(
-                    "snippet",
-                    ""
-                )
-            )
-
             year = extract_year(
                 summary
             )
 
-            if year is None:
+            if not year:
                 year = extract_year(
                     snippet
+                )
+
+            if not year:
+                year = extract_year(
+                    title
                 )
 
             if not year_is_valid(
@@ -1242,149 +1180,210 @@ async def search_google_scholar(
             ):
                 continue
 
-            resources = item.get(
-                "resources",
-                []
-            )
+            authors = []
 
-            free_url = None
-
-            for resource in resources:
-
-                link = resource.get(
-                    "link",
-                    ""
-                )
-
-                if link:
-
-                    free_url = link
-                    break
-
-            final_url = (
-                free_url
-                or item.get(
-                    "link",
-                    ""
+            authors_data = (
+                publication_info.get(
+                    "authors",
+                    []
                 )
             )
 
-            if not final_url:
-                continue
+            if isinstance(
+                authors_data,
+                list
+            ):
 
-            score, percentage = (
-                relevance_score(
+                for author in authors_data:
+
+                    if isinstance(
+                        author,
+                        dict
+                    ):
+
+                        name = author.get(
+                            "name",
+                            ""
+                        )
+
+                    else:
+
+                        name = str(
+                            author
+                        )
+
+                    name = format_author_name(
+                        name
+                    )
+
+                    if name:
+                        authors.append(
+                            name
+                        )
+
+            journal = (
+                extract_journal_from_summary(
+                    summary
+                )
+            )
+
+            item_data = {
+                "title": title,
+                "url": link,
+                "snippet": snippet,
+                "authors": authors,
+                "journal": journal,
+                "series": "",
+                "volume": "",
+                "issue": "",
+                "pages": "",
+                "doi": "",
+                "year": year,
+                "source": "Google Scholar",
+                "relevance": relevance_score(
                     title,
                     snippet,
                     query
                 )
-            )
+            }
 
-            cited_by = None
+            # Якщо є PDF або HTML,
+            # беремо повні бібліографічні
+            # дані безпосередньо з джерела.
 
-            if item.get(
-                "cited_by"
-            ):
+            if link:
 
-                cited_by = item[
-                    "cited_by"
-                ].get(
-                    "value"
+                extra = enrich_from_source(
+                    link
                 )
 
-            # --------------------------------
-            # ДОСТАЁМ ИНФОРМАЦИЮ ИЗ ИСТОЧНИКА
-            # --------------------------------
-
-            source_data = await enrich_from_source(
-                client,
-                final_url
-            )
-
-            metadata = merge_metadata(
-                title,
-                authors,
-                year,
-                summary,
-                source_data
-            )
-
-            bibliography = format_bibliography(
-                metadata["title"],
-                metadata["authors"],
-                metadata["year"],
-                metadata["journal"],
-                metadata["volume"],
-                metadata["issue"],
-                metadata["pages"],
-                metadata["doi"],
-                final_url
-            )
-
-            results.append({
-                "title": metadata["title"],
-                "authors": metadata["authors"],
-                "year": metadata["year"],
-                "journal": metadata["journal"],
-                "volume": metadata["volume"],
-                "issue": metadata["issue"],
-                "pages": metadata["pages"],
-                "doi": metadata["doi"],
-                "abstract": snippet,
-                "url": final_url,
-                "bibliography": bibliography,
-                "found_in": "Google Scholar",
-                "relevance": score,
-                "match_percent": percentage,
-                "cited_by": cited_by,
-                "free_full_text": bool(
-                    free_url
+                item_data = merge_metadata(
+                    item_data,
+                    extra
                 )
-            })
 
-        return results, None
+            item_data["relevance"] = (
+                relevance_score(
+                    item_data.get(
+                        "title",
+                        ""
+                    ),
+                    item_data.get(
+                        "snippet",
+                        ""
+                    ),
+                    query
+                )
+            )
 
-    except Exception as e:
+            results.append(
+                item_data
+            )
 
-        return [], str(e)
+        return results
 
+    except Exception:
 
-def normalize_title(title):
-
-    title = clean_text(
-        title.lower()
-    )
-
-    return re.sub(
-        r"[^a-zа-яіїєґ0-9 ]",
-        "",
-        title
-    )
+        return []
 
 
-def remove_duplicates(results):
+def deduplicate_results(
+    results
+):
 
     unique = {}
 
-    for result in results:
+    for item in results:
 
-        key = normalize_title(
-            result.get(
+        title = clean_text(
+            item.get(
                 "title",
                 ""
             )
-        )
+        ).lower()
 
-        if not key:
+        doi = clean_text(
+            item.get(
+                "doi",
+                ""
+            )
+        ).lower()
 
-            key = result.get(
+        url = clean_text(
+            item.get(
                 "url",
                 ""
+            )
+        ).lower()
+
+        if doi:
+
+            key = (
+                "doi:",
+                doi
+            )
+
+        elif title:
+
+            key = (
+                "title:",
+                re.sub(
+                    r"[^a-zа-яіїєґ0-9]+",
+                    "",
+                    title
+                )
+            )
+
+        else:
+
+            key = (
+                "url:",
+                url
             )
 
         if key not in unique:
 
-            unique[key] = result
+            unique[key] = item
+
+        else:
+
+            current = unique[key]
+
+            # Залишаємо запис,
+            # у якого більше
+            # бібліографічних даних.
+
+            current_data = sum(
+                bool(
+                    current.get(field)
+                )
+                for field in [
+                    "authors",
+                    "journal",
+                    "volume",
+                    "issue",
+                    "pages",
+                    "doi"
+                ]
+            )
+
+            new_data = sum(
+                bool(
+                    item.get(field)
+                )
+                for field in [
+                    "authors",
+                    "journal",
+                    "volume",
+                    "issue",
+                    "pages",
+                    "doi"
+                ]
+            )
+
+            if new_data > current_data:
+
+                unique[key] = item
 
     return list(
         unique.values()
@@ -1392,79 +1391,39 @@ def remove_duplicates(results):
 
 
 @app.post("/api/search")
-async def search_sources(
+async def search(
     request: SearchRequest
 ):
 
-    query = request.query.strip()
-
-    if not query:
-
-        return {
-            "results": [],
-            "total": 0,
-            "sources": {},
-            "errors": {},
-            "message":
-                "Введіть тему пошуку."
-        }
-
-    limit = max(
-        1,
-        min(
-            request.limit,
-            100
-        )
+    results = await search_google_scholar(
+        request.query,
+        request.year_from,
+        request.year_to
     )
 
-    async with httpx.AsyncClient(
-        timeout=30,
-        follow_redirects=True
-    ) as client:
+    results = deduplicate_results(
+        results
+    )
 
-        results, error = (
-            await search_google_scholar(
-                client,
-                query,
-                request.year_from,
-                request.year_to,
-                limit
+    results.sort(
+        key=lambda item: item.get(
+            "relevance",
+            0
+        ),
+        reverse=True
+    )
+
+    for item in results:
+
+        item["bibliography"] = (
+            format_bibliography(
+                item
             )
         )
 
-        results = remove_duplicates(
-            results
-        )
-
-        results.sort(
-            key=lambda x: (
-                x.get(
-                    "relevance",
-                    0
-                ),
-                x.get(
-                    "match_percent",
-                    0
-                ),
-                x.get(
-                    "cited_by",
-                    0
-                ) or 0
-            ),
-            reverse=True
-        )
-
-        results = results[:limit]
-
-        return {
-            "results": results,
-            "total": len(results),
-            "sources": {
-                "google_scholar":
-                    len(results)
-            },
-            "errors": {
-                "google_scholar":
-                    error
-            }
-        }
+    return {
+        "query": request.query,
+        "total": len(results),
+        "google_scholar_count": len(results),
+        "results": results
+    }
