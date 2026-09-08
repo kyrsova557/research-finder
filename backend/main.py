@@ -5,6 +5,7 @@ import httpx
 import re
 import os
 from datetime import datetime
+from urllib.parse import quote
 
 try:
     from bs4 import BeautifulSoup
@@ -251,13 +252,44 @@ def extract_doi(text: str):
     )
 
     if match:
-        doi = match.group(1).rstrip(".,;")
+
+        doi = match.group(1).rstrip(
+            ".,;)"
+        )
 
         return (
             f"https://doi.org/{doi}"
         )
 
     return ""
+
+
+def normalize_doi(doi: str):
+
+    if not doi:
+        return ""
+
+    doi = clean_text(
+        doi
+    )
+
+    doi = re.sub(
+        r"^https?://doi\.org/",
+        "",
+        doi,
+        flags=re.IGNORECASE
+    )
+
+    doi = re.sub(
+        r"^doi:\s*",
+        "",
+        doi,
+        flags=re.IGNORECASE
+    )
+
+    return doi.rstrip(
+        ".,;)"
+    ).strip()
 
 
 def extract_volume(text: str):
@@ -369,15 +401,25 @@ def extract_bibliographic_details(text: str):
 
     text = clean_text(text)
 
-    result["year"] = extract_year(text)
+    result["year"] = extract_year(
+        text
+    )
 
-    result["doi"] = extract_doi(text)
+    result["doi"] = extract_doi(
+        text
+    )
 
-    result["volume"] = extract_volume(text)
+    result["volume"] = extract_volume(
+        text
+    )
 
-    result["issue"] = extract_issue(text)
+    result["issue"] = extract_issue(
+        text
+    )
 
-    result["pages"] = extract_pages(text)
+    result["pages"] = extract_pages(
+        text
+    )
 
     journal_match = re.search(
         r"(Вчені записки[^.]+)",
@@ -410,6 +452,318 @@ def extract_bibliographic_details(text: str):
         )
 
     return result
+
+
+def parse_crossref_metadata(
+    doi: str
+):
+
+    result = {
+        "journal": "",
+        "series": "",
+        "volume": "",
+        "issue": "",
+        "pages": "",
+        "doi": "",
+        "year": None,
+        "authors": [],
+        "title": ""
+    }
+
+    doi_value = normalize_doi(
+        doi
+    )
+
+    if not doi_value:
+        return result
+
+    try:
+
+        encoded_doi = quote(
+            doi_value,
+            safe=""
+        )
+
+        url = (
+            "https://api.crossref.org/works/"
+            f"{encoded_doi}"
+        )
+
+        response = httpx.get(
+            url,
+            timeout=15,
+            follow_redirects=True,
+            headers={
+                "User-Agent":
+                "Research-Finder/1.0"
+            }
+        )
+
+        if response.status_code != 200:
+            return result
+
+        data = response.json()
+
+        message = data.get(
+            "message",
+            {}
+        )
+
+        if not isinstance(
+            message,
+            dict
+        ):
+            return result
+
+        # -------------------------
+        # DOI
+        # -------------------------
+
+        returned_doi = clean_text(
+            message.get(
+                "DOI",
+                ""
+            )
+        )
+
+        if returned_doi:
+
+            result["doi"] = (
+                f"https://doi.org/"
+                f"{returned_doi}"
+            )
+
+        # -------------------------
+        # TITLE
+        # -------------------------
+
+        titles = message.get(
+            "title",
+            []
+        )
+
+        if isinstance(
+            titles,
+            list
+        ) and titles:
+
+            result["title"] = clean_text(
+                titles[0]
+            )
+
+        # -------------------------
+        # AUTHORS
+        # -------------------------
+
+        authors = message.get(
+            "author",
+            []
+        )
+
+        if isinstance(
+            authors,
+            list
+        ):
+
+            for author in authors:
+
+                if not isinstance(
+                    author,
+                    dict
+                ):
+                    continue
+
+                given = clean_text(
+                    author.get(
+                        "given",
+                        ""
+                    )
+                )
+
+                family = clean_text(
+                    author.get(
+                        "family",
+                        ""
+                    )
+                )
+
+                name = " ".join(
+                    part
+                    for part in [
+                        given,
+                        family
+                    ]
+                    if part
+                )
+
+                if name:
+
+                    result[
+                        "authors"
+                    ].append(
+                        name
+                    )
+
+        # -------------------------
+        # JOURNAL
+        # -------------------------
+
+        containers = message.get(
+            "container-title",
+            []
+        )
+
+        if isinstance(
+            containers,
+            list
+        ) and containers:
+
+            result["journal"] = clean_text(
+                containers[0]
+            )
+
+        # -------------------------
+        # VOLUME
+        # -------------------------
+
+        result["volume"] = clean_text(
+            message.get(
+                "volume",
+                ""
+            )
+        )
+
+        # -------------------------
+        # ISSUE
+        # -------------------------
+
+        result["issue"] = clean_text(
+            message.get(
+                "issue",
+                ""
+            )
+        )
+
+        # -------------------------
+        # PAGES
+        # -------------------------
+
+        page_value = clean_text(
+            message.get(
+                "page",
+                ""
+            )
+        )
+
+        first_page = clean_text(
+            message.get(
+                "first-page",
+                ""
+            )
+        )
+
+        last_page = clean_text(
+            message.get(
+                "last-page",
+                ""
+            )
+        )
+
+        if (
+            first_page
+            and last_page
+        ):
+
+            result["pages"] = (
+                f"{first_page}–"
+                f"{last_page}"
+            )
+
+        elif page_value:
+
+            page_value = page_value.replace(
+                "--",
+                "–"
+            )
+
+            page_value = page_value.replace(
+                "-",
+                "–"
+            )
+
+            result["pages"] = page_value
+
+        # -------------------------
+        # YEAR
+        # -------------------------
+
+        date_candidates = [
+            message.get(
+                "published-print",
+                {}
+            ),
+            message.get(
+                "published-online",
+                {}
+            ),
+            message.get(
+                "issued",
+                {}
+            )
+        ]
+
+        for date_data in date_candidates:
+
+            if not isinstance(
+                date_data,
+                dict
+            ):
+                continue
+
+            date_parts = date_data.get(
+                "date-parts",
+                []
+            )
+
+            if (
+                isinstance(
+                    date_parts,
+                    list
+                )
+                and date_parts
+                and isinstance(
+                    date_parts[0],
+                    list
+                )
+                and date_parts[0]
+            ):
+
+                try:
+
+                    year = int(
+                        date_parts[0][0]
+                    )
+
+                    if (
+                        1900
+                        <= year
+                        <= datetime.now().year
+                    ):
+
+                        result["year"] = year
+                        break
+
+                except (
+                    ValueError,
+                    TypeError
+                ):
+                    pass
+
+        return result
+
+    except Exception:
+
+        return result
 
 
 def parse_pdf_metadata(url: str):
@@ -475,8 +829,7 @@ def parse_pdf_metadata(url: str):
         ):
 
             page_text = (
-                reader.pages[index]
-                .extract_text()
+                reader.pages[index].extract_text()
                 or ""
             )
 
@@ -570,11 +923,6 @@ def parse_pdf_metadata(url: str):
 
         else:
 
-            # Якщо на першій сторінці PDF
-            # є номер сторінки статті,
-            # визначаємо весь діапазон
-            # за кількістю сторінок PDF.
-
             first_page_number = None
 
             for line in lines[:40]:
@@ -662,7 +1010,7 @@ def parse_pdf_metadata(url: str):
         # TITLE
         # -------------------------
 
-        for index, line in enumerate(lines):
+        for line in lines:
 
             upper_line = line.upper()
 
@@ -806,10 +1154,6 @@ def parse_html_metadata(
                 f"{last_page}"
             )
 
-        # Деякі сайти зберігають
-        # весь діапазон сторінок
-        # у citation_pages.
-
         if not result["pages"]:
 
             citation_pages = meta_content(
@@ -926,6 +1270,53 @@ def merge_metadata(
         )
 
     return original
+
+
+def apply_crossref_metadata(
+    item
+):
+
+    doi = item.get(
+        "doi",
+        ""
+    )
+
+    if not doi:
+        return item
+
+    crossref = parse_crossref_metadata(
+        doi
+    )
+
+    if not crossref:
+        return item
+
+    # Crossref має пріоритет,
+    # коли містить конкретне поле.
+
+    for key in [
+        "title",
+        "journal",
+        "volume",
+        "issue",
+        "pages",
+        "year",
+        "doi"
+    ]:
+
+        if crossref.get(key):
+
+            item[key] = crossref[key]
+
+    if crossref.get(
+        "authors"
+    ):
+
+        item["authors"] = (
+            crossref["authors"]
+        )
+
+    return item
 
 
 def format_bibliography(
@@ -1227,6 +1618,18 @@ async def search_google_scholar(
                 )
             )
 
+            # Спробуємо знайти DOI
+            # ще до звернення до джерела.
+
+            doi = extract_doi(
+                summary
+            )
+
+            if not doi:
+                doi = extract_doi(
+                    snippet
+                )
+
             item_data = {
                 "title": title,
                 "url": link,
@@ -1237,7 +1640,7 @@ async def search_google_scholar(
                 "volume": "",
                 "issue": "",
                 "pages": "",
-                "doi": "",
+                "doi": doi,
                 "year": year,
                 "source": "Google Scholar",
                 "relevance": relevance_score(
@@ -1248,8 +1651,8 @@ async def search_google_scholar(
             }
 
             # Якщо є PDF або HTML,
-            # беремо повні бібліографічні
-            # дані безпосередньо з джерела.
+            # отримуємо додаткові
+            # бібліографічні дані.
 
             if link:
 
@@ -1260,6 +1663,19 @@ async def search_google_scholar(
                 item_data = merge_metadata(
                     item_data,
                     extra
+                )
+
+            # Якщо DOI відомий,
+            # перевіряємо його через Crossref.
+
+            if item_data.get(
+                "doi"
+            ):
+
+                item_data = (
+                    apply_crossref_metadata(
+                        item_data
+                    )
                 )
 
             item_data["relevance"] = (
@@ -1320,7 +1736,7 @@ def deduplicate_results(
 
             key = (
                 "doi:",
-                doi
+                normalize_doi(doi)
             )
 
         elif title:
@@ -1348,10 +1764,6 @@ def deduplicate_results(
         else:
 
             current = unique[key]
-
-            # Залишаємо запис,
-            # у якого більше
-            # бібліографічних даних.
 
             current_data = sum(
                 bool(
