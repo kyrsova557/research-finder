@@ -183,6 +183,7 @@ def format_authors(authors):
         return ""
 
     result = []
+    seen = set()
 
     for author in authors:
 
@@ -191,6 +192,12 @@ def format_authors(authors):
         if not author:
             continue
 
+        author_key = author.lower()
+
+        if author_key in seen:
+            continue
+
+        seen.add(author_key)
         result.append(author)
 
     return ", ".join(result)
@@ -230,30 +237,27 @@ def extract_journal_from_summary(summary: str):
     return journal
 
 
-def format_authors(authors):
+def extract_doi(text: str):
 
-    if not authors:
+    if not text:
         return ""
 
-    result = []
-    seen = set()
+    match = re.search(
+        r"(?:https?://doi\.org/|doi:\s*)"
+        r"(10\.\d{4,9}/[-._;()/:A-Z0-9]+)",
+        text,
+        re.IGNORECASE
+    )
 
-    for author in authors:
+    if match:
 
-        author = clean_text(author)
+        doi = match.group(1).rstrip(
+            ".,;)"
+        )
 
-        if not author:
-            continue
+        return f"https://doi.org/{doi}"
 
-        author_key = author.lower()
-
-        if author_key in seen:
-            continue
-
-        seen.add(author_key)
-        result.append(author)
-
-    return ", ".join(result)
+    return ""
 
 
 def normalize_doi(doi: str):
@@ -749,7 +753,12 @@ def parse_crossref_metadata(doi: str):
 
         return result
 
-    except Exception:
+    except Exception as e:
+
+        print(
+            "CROSSREF ERROR:",
+            repr(e)
+        )
 
         return result
 
@@ -954,7 +963,12 @@ def parse_pdf_metadata(url: str):
 
         return result
 
-    except Exception:
+    except Exception as e:
+
+        print(
+            "PDF ERROR:",
+            repr(e)
+        )
 
         return result
 
@@ -1105,7 +1119,12 @@ def parse_html_metadata(
 
         return result
 
-    except Exception:
+    except Exception as e:
+
+        print(
+            "HTML ERROR:",
+            repr(e)
+        )
 
         return result
 
@@ -1148,7 +1167,12 @@ def enrich_from_source(
             response.text
         )
 
-    except Exception:
+    except Exception as e:
+
+        print(
+            "SOURCE ERROR:",
+            repr(e)
+        )
 
         return {}
 
@@ -1518,6 +1542,11 @@ async def search_google_scholar(
     )
 
     if not api_key:
+
+        print(
+            "SERPAPI ERROR: SERPAPI_KEY is not set"
+        )
+
         return []
 
     params = {
@@ -1548,184 +1577,233 @@ async def search_google_scholar(
 
             data = response.json()
 
-        results = []
+        if data.get("error"):
 
-        for item in data.get(
+            print(
+                "SERPAPI ERROR:",
+                data.get("error")
+            )
+
+            return []
+
+        organic_results = data.get(
             "organic_results",
             []
-        ):
+        )
 
-            title = clean_text(
-                item.get(
-                    "title",
+        print(
+            "SERPAPI RESULTS:",
+            len(organic_results)
+        )
+
+        results = []
+
+        for item in organic_results:
+
+            try:
+
+                title = clean_text(
+                    item.get(
+                        "title",
+                        ""
+                    )
+                )
+
+                link = item.get(
+                    "link",
                     ""
                 )
-            )
 
-            link = item.get(
-                "link",
-                ""
-            )
-
-            snippet = clean_text(
-                item.get(
-                    "snippet",
-                    ""
+                snippet = clean_text(
+                    item.get(
+                        "snippet",
+                        ""
+                    )
                 )
-            )
 
-            publication_info = item.get(
-                "publication_info",
-                {}
-            )
-
-            summary = clean_text(
-                publication_info.get(
-                    "summary",
-                    ""
+                publication_info = item.get(
+                    "publication_info",
+                    {}
                 )
-            )
 
-            year = extract_year(
-                summary
-            )
+                summary = clean_text(
+                    publication_info.get(
+                        "summary",
+                        ""
+                    )
+                )
 
-            if not year:
                 year = extract_year(
-                    snippet
+                    summary
                 )
 
-            if not year:
-                year = extract_year(
-                    title
-                )
-
-            if not year_is_valid(
-                year,
-                year_from,
-                year_to
-            ):
-                continue
-
-            authors = []
-
-            authors_data = (
-                publication_info.get(
-                    "authors",
-                    []
-                )
-            )
-
-            if isinstance(
-                authors_data,
-                list
-            ):
-
-                for author in authors_data:
-
-                    if isinstance(
-                        author,
-                        dict
-                    ):
-
-                        name = author.get(
-                            "name",
-                            ""
-                        )
-
-                    else:
-
-                        name = str(
-                            author
-                        )
-
-                    name = format_author_name(
-                        name
+                if not year:
+                    year = extract_year(
+                        snippet
                     )
 
-                    if name:
-                        authors.append(
+                if not year:
+                    year = extract_year(
+                        title
+                    )
+
+                if not year_is_valid(
+                    year,
+                    year_from,
+                    year_to
+                ):
+                    continue
+
+                authors = []
+
+                authors_data = (
+                    publication_info.get(
+                        "authors",
+                        []
+                    )
+                )
+
+                if isinstance(
+                    authors_data,
+                    list
+                ):
+
+                    for author in authors_data:
+
+                        if isinstance(
+                            author,
+                            dict
+                        ):
+
+                            name = author.get(
+                                "name",
+                                ""
+                            )
+
+                        else:
+
+                            name = str(
+                                author
+                            )
+
+                        name = format_author_name(
                             name
                         )
 
-            journal = (
-                extract_journal_from_summary(
-                    summary
-                )
-            )
+                        if name:
+                            authors.append(
+                                name
+                            )
 
-            doi = extract_doi(
-                summary
-            )
-
-            if not doi:
-                doi = extract_doi(
-                    snippet
-                )
-
-            item_data = {
-                "title": title,
-                "url": link,
-                "snippet": snippet,
-                "authors": authors,
-                "journal": journal,
-                "series": "",
-                "volume": "",
-                "issue": "",
-                "pages": "",
-                "doi": doi,
-                "year": year,
-                "publication_type": "",
-                "book_title": "",
-                "source": "Google Scholar",
-                "relevance": relevance_score(
-                    title,
-                    snippet,
-                    query
-                )
-            }
-
-            if link:
-
-                extra = enrich_from_source(
-                    link
-                )
-
-                item_data = merge_metadata(
-                    item_data,
-                    extra
-                )
-
-            if item_data.get("doi"):
-
-                item_data = (
-                    apply_crossref_metadata(
-                        item_data
+                journal = (
+                    extract_journal_from_summary(
+                        summary
                     )
                 )
 
-            item_data["relevance"] = (
-                relevance_score(
-                    item_data.get(
-                        "title",
-                        ""
-                    ),
-                    item_data.get(
-                        "snippet",
-                        ""
-                    ),
-                    query
+                doi = extract_doi(
+                    summary
                 )
-            )
 
-            results.append(
-                item_data
-            )
+                if not doi:
+                    doi = extract_doi(
+                        snippet
+                    )
+
+                item_data = {
+                    "title": title,
+                    "url": link,
+                    "snippet": snippet,
+                    "authors": authors,
+                    "journal": journal,
+                    "series": "",
+                    "volume": "",
+                    "issue": "",
+                    "pages": "",
+                    "doi": doi,
+                    "year": year,
+                    "publication_type": "",
+                    "book_title": "",
+                    "source": "Google Scholar",
+                    "relevance": relevance_score(
+                        title,
+                        snippet,
+                        query
+                    )
+                }
+
+                if link:
+
+                    try:
+
+                        extra = enrich_from_source(
+                            link
+                        )
+
+                        item_data = merge_metadata(
+                            item_data,
+                            extra
+                        )
+
+                    except Exception as e:
+
+                        print(
+                            "ENRICH ERROR:",
+                            repr(e)
+                        )
+
+                if item_data.get("doi"):
+
+                    try:
+
+                        item_data = (
+                            apply_crossref_metadata(
+                                item_data
+                            )
+                        )
+
+                    except Exception as e:
+
+                        print(
+                            "CROSSREF APPLY ERROR:",
+                            repr(e)
+                        )
+
+                item_data["relevance"] = (
+                    relevance_score(
+                        item_data.get(
+                            "title",
+                            ""
+                        ),
+                        item_data.get(
+                            "snippet",
+                            ""
+                        ),
+                        query
+                    )
+                )
+
+                results.append(
+                    item_data
+                )
+
+            except Exception as e:
+
+                print(
+                    "RESULT PROCESSING ERROR:",
+                    repr(e)
+                )
+
+                continue
 
         return results
+
     except Exception as e:
 
-        print("SERPAPI ERROR:", repr(e))
+        print(
+            "SERPAPI ERROR:",
+            repr(e)
+        )
 
         return []
 
