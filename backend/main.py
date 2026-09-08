@@ -286,6 +286,58 @@ def normalize_doi(doi: str):
     ).strip()
 
 
+def is_valid_doi(doi: str):
+
+    doi_value = normalize_doi(doi)
+
+    if not doi_value:
+        return False
+
+    if not doi_value.startswith("10."):
+        return False
+
+    if "/" not in doi_value:
+        return False
+
+    prefix, suffix = doi_value.split(
+        "/",
+        1
+    )
+
+    if not re.fullmatch(
+        r"10\.\d{4,9}",
+        prefix,
+        re.IGNORECASE
+    ):
+        return False
+
+    if len(suffix) < 4:
+        return False
+
+    if suffix.endswith(
+        (
+            "-",
+            "_",
+            ".",
+            ":",
+            ";",
+            "("
+        )
+    ):
+        return False
+
+    if not re.search(
+        r"[A-Za-z0-9]",
+        suffix
+    ):
+        return False
+
+    if "…" in suffix or "..." in suffix:
+        return False
+
+    return True
+
+
 def extract_volume(text: str):
 
     if not text:
@@ -452,7 +504,7 @@ def parse_crossref_metadata(doi: str):
 
     doi_value = normalize_doi(doi)
 
-    if not doi_value:
+    if not is_valid_doi(doi_value):
         return result
 
     try:
@@ -505,7 +557,7 @@ def parse_crossref_metadata(doi: str):
             )
         )
 
-        if returned_doi:
+        if is_valid_doi(returned_doi):
 
             result["doi"] = (
                 f"https://doi.org/"
@@ -757,6 +809,462 @@ def parse_crossref_metadata(doi: str):
 
         print(
             "CROSSREF ERROR:",
+            repr(e)
+        )
+
+        return result
+
+
+def crossref_title_score(
+    query_title: str,
+    candidate_title: str
+):
+
+    query_words = set(
+        make_keywords(query_title)
+    )
+
+    candidate_words = set(
+        make_keywords(candidate_title)
+    )
+
+    if not query_words or not candidate_words:
+        return 0
+
+    intersection = (
+        query_words
+        & candidate_words
+    )
+
+    return (
+        len(intersection)
+        / max(
+            len(query_words),
+            len(candidate_words)
+        )
+    )
+
+
+def search_crossref_by_title(
+    title: str,
+    year=None
+):
+
+    result = {
+        "type": "",
+        "journal": "",
+        "series": "",
+        "volume": "",
+        "issue": "",
+        "pages": "",
+        "doi": "",
+        "year": None,
+        "authors": [],
+        "title": "",
+        "book_title": "",
+        "publisher": ""
+    }
+
+    title = clean_text(title)
+
+    if not title:
+        return result
+
+    try:
+
+        params = {
+            "query.title": title,
+            "rows": 5
+        }
+
+        if year:
+            params["filter"] = (
+                f"from-pub-date:{year}-01-01,"
+                f"until-pub-date:{year}-12-31"
+            )
+
+        response = httpx.get(
+            "https://api.crossref.org/v1/works",
+            params=params,
+            timeout=15,
+            follow_redirects=True,
+            headers={
+                "User-Agent":
+                "Research-Finder/1.0 "
+                "(academic-source-search)"
+            }
+        )
+
+        if response.status_code != 200:
+            return result
+
+        data = response.json()
+
+        message = data.get(
+            "message",
+            {}
+        )
+
+        items = message.get(
+            "items",
+            []
+        )
+
+        if not isinstance(
+            items,
+            list
+        ):
+            return result
+
+        best_item = None
+        best_score = 0
+
+        for candidate in items:
+
+            if not isinstance(
+                candidate,
+                dict
+            ):
+                continue
+
+            candidate_titles = candidate.get(
+                "title",
+                []
+            )
+
+            if not (
+                isinstance(
+                    candidate_titles,
+                    list
+                )
+                and candidate_titles
+            ):
+                continue
+
+            candidate_title = clean_text(
+                candidate_titles[0]
+            )
+
+            if not candidate_title:
+                continue
+
+            score = crossref_title_score(
+                title,
+                candidate_title
+            )
+
+            if year:
+
+                candidate_year = None
+
+                date_candidates = [
+                    candidate.get(
+                        "published-print",
+                        {}
+                    ),
+                    candidate.get(
+                        "published",
+                        {}
+                    ),
+                    candidate.get(
+                        "published-online",
+                        {}
+                    ),
+                    candidate.get(
+                        "issued",
+                        {}
+                    )
+                ]
+
+                for date_data in date_candidates:
+
+                    if not isinstance(
+                        date_data,
+                        dict
+                    ):
+                        continue
+
+                    date_parts = date_data.get(
+                        "date-parts",
+                        []
+                    )
+
+                    if (
+                        isinstance(
+                            date_parts,
+                            list
+                        )
+                        and date_parts
+                        and isinstance(
+                            date_parts[0],
+                            list
+                        )
+                        and date_parts[0]
+                    ):
+
+                        try:
+
+                            candidate_year = int(
+                                date_parts[0][0]
+                            )
+
+                            break
+
+                        except (
+                            ValueError,
+                            TypeError
+                        ):
+                            pass
+
+                if (
+                    candidate_year
+                    and candidate_year == year
+                ):
+                    score += 0.25
+
+            if score > best_score:
+
+                best_score = score
+                best_item = candidate
+
+        if best_item is None:
+            return result
+
+        candidate_doi = clean_text(
+            best_item.get(
+                "DOI",
+                ""
+            )
+        )
+
+        if not is_valid_doi(
+            candidate_doi
+        ):
+            return result
+
+        result["doi"] = (
+            f"https://doi.org/"
+            f"{candidate_doi}"
+        )
+
+        titles = best_item.get(
+            "title",
+            []
+        )
+
+        if (
+            isinstance(titles, list)
+            and titles
+        ):
+
+            result["title"] = clean_text(
+                titles[0]
+            )
+
+        result["type"] = clean_text(
+            best_item.get(
+                "type",
+                ""
+            )
+        ).lower()
+
+        authors = best_item.get(
+            "author",
+            []
+        )
+
+        if isinstance(
+            authors,
+            list
+        ):
+
+            for author in authors:
+
+                if not isinstance(
+                    author,
+                    dict
+                ):
+                    continue
+
+                given = clean_text(
+                    author.get(
+                        "given",
+                        ""
+                    )
+                )
+
+                family = clean_text(
+                    author.get(
+                        "family",
+                        ""
+                    )
+                )
+
+                name = " ".join(
+                    part
+                    for part in [
+                        given,
+                        family
+                    ]
+                    if part
+                )
+
+                if name:
+                    result["authors"].append(
+                        name
+                    )
+
+        containers = best_item.get(
+            "container-title",
+            []
+        )
+
+        if (
+            isinstance(
+                containers,
+                list
+            )
+            and containers
+        ):
+
+            result["journal"] = clean_text(
+                containers[0]
+            )
+
+        result["volume"] = clean_text(
+            best_item.get(
+                "volume",
+                ""
+            )
+        )
+
+        result["issue"] = clean_text(
+            best_item.get(
+                "issue",
+                ""
+            )
+        )
+
+        first_page = clean_text(
+            best_item.get(
+                "first-page",
+                ""
+            )
+        )
+
+        last_page = clean_text(
+            best_item.get(
+                "last-page",
+                ""
+            )
+        )
+
+        page_value = clean_text(
+            best_item.get(
+                "page",
+                ""
+            )
+        )
+
+        if (
+            first_page
+            and last_page
+        ):
+
+            result["pages"] = (
+                f"{first_page}–"
+                f"{last_page}"
+            )
+
+        elif page_value:
+
+            result["pages"] = (
+                page_value
+                .replace(
+                    "--",
+                    "–"
+                )
+                .replace(
+                    "-",
+                    "–"
+                )
+            )
+
+        elif first_page:
+
+            result["pages"] = first_page
+
+        date_candidates = [
+            best_item.get(
+                "published-print",
+                {}
+            ),
+            best_item.get(
+                "published",
+                {}
+            ),
+            best_item.get(
+                "published-online",
+                {}
+            ),
+            best_item.get(
+                "issued",
+                {}
+            )
+        ]
+
+        for date_data in date_candidates:
+
+            if not isinstance(
+                date_data,
+                dict
+            ):
+                continue
+
+            date_parts = date_data.get(
+                "date-parts",
+                []
+            )
+
+            if (
+                isinstance(date_parts, list)
+                and date_parts
+                and isinstance(
+                    date_parts[0],
+                    list
+                )
+                and date_parts[0]
+            ):
+
+                try:
+
+                    candidate_year = int(
+                        date_parts[0][0]
+                    )
+
+                    if (
+                        1900
+                        <= candidate_year
+                        <= datetime.now().year
+                    ):
+
+                        result["year"] = (
+                            candidate_year
+                        )
+                        break
+
+                except (
+                    ValueError,
+                    TypeError
+                ):
+                    pass
+
+        return result
+
+    except Exception as e:
+
+        print(
+            "CROSSREF TITLE ERROR:",
             repr(e)
         )
 
@@ -1224,7 +1732,7 @@ def apply_crossref_metadata(
         ""
     )
 
-    if not doi:
+    if not is_valid_doi(doi):
         return item
 
     crossref = parse_crossref_metadata(
@@ -1294,28 +1802,116 @@ def apply_crossref_metadata(
                 crossref["journal"]
             )
 
-    if publication_type not in {
-        "book-chapter",
-        "book-section"
-    }:
-
-        if crossref.get("volume"):
+        if (
+            crossref.get("volume")
+            and not item.get("volume")
+        ):
 
             item["volume"] = (
                 crossref["volume"]
             )
 
-        if crossref.get("issue"):
+        if (
+            crossref.get("issue")
+            and not item.get("issue")
+        ):
 
             item["issue"] = (
                 crossref["issue"]
             )
 
-    if crossref.get("pages"):
+    if (
+        crossref.get("pages")
+        and not item.get("pages")
+    ):
 
         item["pages"] = (
             crossref["pages"]
         )
+
+    return item
+
+
+def recover_metadata_by_title(
+    item
+):
+
+    title = clean_text(
+        item.get(
+            "title",
+            ""
+        )
+    )
+
+    if not title:
+        return item
+
+    current_doi = item.get(
+        "doi",
+        ""
+    )
+
+    if current_doi and not is_valid_doi(
+        current_doi
+    ):
+
+        print(
+            "INVALID DOI, RECOVERING BY TITLE:",
+            current_doi
+        )
+
+        item["doi"] = ""
+
+    if is_valid_doi(
+        item.get(
+            "doi",
+            ""
+        )
+    ):
+
+        return item
+
+    year = item.get(
+        "year"
+    )
+
+    recovered = search_crossref_by_title(
+        title,
+        year
+    )
+
+    if not recovered.get("doi"):
+        return item
+
+    if recovered.get("doi"):
+        item["doi"] = recovered["doi"]
+
+    if recovered.get("title"):
+        item["title"] = recovered["title"]
+
+    if recovered.get("authors"):
+        item["authors"] = recovered["authors"]
+
+    if recovered.get("journal"):
+        item["journal"] = recovered["journal"]
+
+    if recovered.get("year"):
+        item["year"] = recovered["year"]
+
+    if recovered.get("volume"):
+        item["volume"] = recovered["volume"]
+
+    if recovered.get("issue"):
+        item["issue"] = recovered["issue"]
+
+    if recovered.get("pages"):
+        item["pages"] = recovered["pages"]
+
+    if recovered.get("type"):
+        item["publication_type"] = recovered["type"]
+
+    if recovered.get("book_title"):
+        item["book_title"] = recovered["book_title"]
 
     return item
 
@@ -1399,6 +1995,9 @@ def format_bibliography(
             ""
         )
     )
+
+    if not is_valid_doi(doi):
+        doi = ""
 
     url = clean_text(
         item.get(
@@ -1752,6 +2351,21 @@ async def search_google_scholar(
                             repr(e)
                         )
 
+                try:
+
+                    item_data = (
+                        recover_metadata_by_title(
+                            item_data
+                        )
+                    )
+
+                except Exception as e:
+
+                    print(
+                        "CROSSREF TITLE RECOVERY ERROR:",
+                        repr(e)
+                    )
+
                 if item_data.get("doi"):
 
                     try:
@@ -1837,7 +2451,7 @@ def deduplicate_results(
             )
         ).lower()
 
-        if doi:
+        if doi and is_valid_doi(doi):
 
             key = (
                 "doi:",
