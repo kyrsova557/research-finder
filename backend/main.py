@@ -1862,4 +1862,3 @@ async def search(
         "google_scholar_count": len(results),
         "results": results
     }
-```
