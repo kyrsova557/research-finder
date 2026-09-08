@@ -230,27 +230,30 @@ def extract_journal_from_summary(summary: str):
     return journal
 
 
-def extract_doi(text: str):
+def format_authors(authors):
 
-    if not text:
+    if not authors:
         return ""
 
-    match = re.search(
-        r"(?:https?://doi\.org/|doi:\s*)"
-        r"(10\.\d{4,9}/[-._;()/:A-Z0-9]+)",
-        text,
-        re.IGNORECASE
-    )
+    result = []
+    seen = set()
 
-    if match:
+    for author in authors:
 
-        doi = match.group(1).rstrip(
-            ".,;)"
-        )
+        author = clean_text(author)
 
-        return f"https://doi.org/{doi}"
+        if not author:
+            continue
 
-    return ""
+        author_key = author.lower()
+
+        if author_key in seen:
+            continue
+
+        seen.add(author_key)
+        result.append(author)
+
+    return ", ".join(result)
 
 
 def normalize_doi(doi: str):
