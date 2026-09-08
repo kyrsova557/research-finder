@@ -1720,8 +1720,9 @@ async def search_google_scholar(
             )
 
         return results
+    except Exception as e:
 
-    except Exception:
+        print("SERPAPI ERROR:", repr(e))
 
         return []
 
